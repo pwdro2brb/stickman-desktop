@@ -1,0 +1,19 @@
+{
+  "character": {
+    "name": "Pixel",
+    "color": "#ff7a00",
+    "start_x": 120,
+    "ground_offset": 72
+  },
+  "authorized_apps": {
+    "bloco de notas": ["notepad.exe"],
+    "notepad": ["notepad.exe"],
+    "calculadora": ["calc.exe"],
+    "paint": ["mspaint.exe"],
+    "explorador": ["explorer.exe"]
+  },
+  "safety": {
+    "allow_window_minimize": true,
+    "allow_process_launch": true
+  }
+}
