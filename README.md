@@ -10,12 +10,17 @@ The project renders an original stick figure over Windows, lets the character in
 
 - Transparent, always-on-top Windows overlay.
 - Animated walking, jumping, speech bubbles and visual effects.
+- Multiple-monitor overlay, including monitors to the left or above the primary display.
+- Animated leaps onto window edges, walking on them and reacting to moving or disappearing support.
+- Drag-and-release physics, waving, cursor following and visual exploration.
 - Global `F2`, `F3` and `F4` hotkeys using Win32 `RegisterHotKey`.
 - Detection of the last valid external foreground window.
+- Live list of visible external windows, including their titles, sizes and positions.
 - Safe minimization that excludes the overlay and command panel.
 - Allowlist-based application launcher.
 - Click-through mode, so the desktop remains usable.
 - Scripted fight and portal scenes that do not modify files or applications.
+- An original digital sparring echo, articulated poses and short-lived impact particles.
 - Portuguese command parser with no cloud dependency.
 
 ## Safety model
@@ -62,13 +67,24 @@ stickman-desktop
 - `F3`: toggle click-through mode.
 - `F4`: start a short visual story.
 - Menu button: open the command panel while interactive mode is enabled.
+- Drag a stroke of the character with the left mouse button, then release it to let it fall.
+- Double-click a stroke of the character to jump.
+- Right-click the character for its action menu. These mouse controls require interactive mode (`F3`).
 
 ## Commands
 
 ```text
 andar 500
+andar -500,5
 pular
+subir na janela
+descer
+explorar
+seguir mouse
+parar
+acenar
 olhar tela
+listar janelas
 minimizar janela
 abrir bloco de notas
 abrir calculadora
@@ -78,6 +94,32 @@ história
 portal
 ajuda
 ```
+
+Use `listar janelas` (also `janelas visíveis` or `ver janelas`) to open a live,
+scrollable window list. It refreshes every 250 ms and excludes the Stickman's own
+windows, hidden or minimized windows, windows hidden by Windows' compositor, the
+desktop shell, and windows without a title or usable bounds. Covered windows can
+still appear: this lists window metadata, without reading screen content or
+checking whether another window covers it. Close the list with **Fechar** or `Esc`.
+
+`andar` uses the Windows desktop's global X coordinate. Negative values reach
+monitors to the left of the primary display; both `500.5` and `500,5` are accepted.
+When standing on a window, the character walks within that window's top edge.
+
+To try window interaction, select an application window, press `F2`, and enter
+`subir na janela`. The character leaps onto its upper edge and follows it when
+it moves. If resizing removes its support, or the window closes, hides or
+minimizes, the character falls and can land on another edge or a monitor's floor.
+Use `descer` to drop from a window. The edge needs at least 104 px of headroom
+below the monitor's usable top and the window must be at least 80 px wide; move
+a maximized or very high window down before trying to climb it.
+
+`explorar` starts a visual walk with occasional leaps onto eligible windows.
+`seguir mouse` follows the cursor horizontally without clicking applications.
+`parar` stops exploration, cursor following and the current story; `acenar` plays
+a greeting pose. Dragging the character gives direct control and interrupts its
+current activity. These movements affect the rendered character; application
+launch and minimization remain separate explicit commands.
 
 ## Configuration
 
@@ -113,11 +155,14 @@ stickman-desktop/
 │   ├── PROJECT_VISION.md
 │   └── ROADMAP.md
 ├── src/stickman_desktop/
+│   ├── animation.py
 │   ├── app.py
 │   ├── config.py
 │   ├── core.py
+│   ├── environment.py
+│   ├── motion.py
 │   └── windows.py
-├── tests/test_core.py
+├── tests/
 ├── config.example.json
 ├── pyproject.toml
 ├── run.py
@@ -129,7 +174,8 @@ stickman-desktop/
 
 ## Current limitations
 
-- The visual overlay is optimized for a single primary monitor.
+- Monitor layout is refreshed approximately once per second. Mixed-DPI layouts may need a restart if changing scaling affects alignment.
+- Window platforms use metadata; a partly covered window can still provide a surface.
 - Perception is limited to window metadata, not buttons or screen content.
 - Stories are scripted rather than generated dynamically.
 - The character uses procedural lines, not sprite animation.
@@ -137,7 +183,7 @@ stickman-desktop/
 
 ## Vision
 
-Future versions may add Windows UI Automation, window-edge physics, multiple original characters, configurable story files, extensions for supported applications, and optional local AI planning. See [PROJECT_VISION.md](docs/PROJECT_VISION.md) and [ROADMAP.md](docs/ROADMAP.md).
+Future versions may add Windows UI Automation, multiple original characters, configurable story files, extensions for supported applications, and optional local AI planning. See [PROJECT_VISION.md](docs/PROJECT_VISION.md) and [ROADMAP.md](docs/ROADMAP.md).
 
 ## Originality and inspiration
 

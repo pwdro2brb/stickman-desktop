@@ -25,12 +25,30 @@ def parse_command(text: str) -> ParsedCommand:
     command = normalize(text)
     if not command:
         return ParsedCommand("empty")
+    # Keep numeric punctuation before general normalization removes signs and dots.
+    walk = re.match(r"^\s*(\S+)\s+(.*?)\s*$", str(text), re.DOTALL)
+    if walk and normalize(walk.group(1)) == "andar":
+        return ParsedCommand("walk", walk.group(2).replace(",", "."))
     if command.startswith("andar "):
         return ParsedCommand("walk", command.removeprefix("andar ").strip())
     if command in {"pular", "pule"}:
         return ParsedCommand("jump")
+    if command in {"subir na janela", "subir janela", "escalar janela", "pular na janela"}:
+        return ParsedCommand("climb")
+    if command in {"descer", "descer da janela"}:
+        return ParsedCommand("descend")
+    if command in {"explorar", "passear"}:
+        return ParsedCommand("explore")
+    if command in {"seguir mouse", "seguir cursor"}:
+        return ParsedCommand("follow")
+    if command in {"parar", "descansar"}:
+        return ParsedCommand("stop")
+    if command in {"acenar", "oi"}:
+        return ParsedCommand("wave")
     if command in {"olhar tela", "analisar tela", "janela ativa"}:
         return ParsedCommand("inspect")
+    if command in {"listar janelas", "janelas visiveis", "ver janelas"}:
+        return ParsedCommand("list_windows")
     if command in {"minimizar", "minimizar janela"}:
         return ParsedCommand("minimize")
     if command.startswith("abrir "):

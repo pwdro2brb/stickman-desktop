@@ -12,10 +12,10 @@
 
 ## 0.3 - Window awareness
 
-- [ ] Enumerate visible windows
-- [ ] Support multiple monitors
-- [ ] Walk on window edges
-- [ ] React to moved and resized windows
+- [x] Enumerate visible windows (`listar janelas`, live metadata list)
+- [x] Support multiple monitors (virtual desktop and per-monitor floors)
+- [x] Walk on window edges (`subir na janela`, `andar`, `descer`)
+- [x] React to moved and resized windows (follow support or fall when it disappears)
 - [ ] Add a proper tray icon and restore menu
 
 ## 0.4 - Animation system
