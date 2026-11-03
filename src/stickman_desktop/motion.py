@@ -15,6 +15,15 @@ class Surface:
     kind: str = "window"
 
 
+@dataclass(frozen=True)
+class Impact:
+    x: float
+    y: float
+    speed: float
+    count: int
+    kind: str
+
+
 @dataclass
 class _Leap:
     key: str
@@ -28,13 +37,17 @@ class Motion:
     """Animate a character without moving or controlling any real window."""
 
     GRAVITY = 1800.0
-    WALK_SPEED = 300.0
+    WALK_SPEED = 140.0
     JUMP_SPEED = 650.0
     EDGE = 24.0
     BODY_MARGIN = 28.0
     HEAD_ROOM = 100.0
     LEAP_DURATION = 0.7
-    MAX_THROW_SPEED = 900.0
+    MAX_THROW_SPEED = 3000.0
+    WALL_RESTITUTION = 0.78
+    FLOOR_RESTITUTION = 0.52
+    MIN_BOUNCE_SPEED = 180.0
+    MAX_PENDING_IMPACTS = 64
 
     def __init__(self, width: float, height: float, x: float, y: float) -> None:
         if not all(math.isfinite(value) for value in (width, height, x, y)):
@@ -52,6 +65,10 @@ class Motion:
         self._surfaces: dict[str, Surface] = {}
         self._ignored_key: str | None = None
         self._leap: _Leap | None = None
+        self._throwing = False
+        self.bounce_count = 0
+        self._impacts: list[Impact] = []
+        self._bounds: list[tuple[float, float, float, float]] = []
 
     @property
     def support(self) -> Surface | None:
@@ -60,6 +77,81 @@ class Motion:
     @property
     def grounded(self) -> bool:
         return self.support is not None
+
+    @property
+    def throwing(self) -> bool:
+        return self._throwing
+
+    def _reset_throw(self) -> None:
+        self._throwing = False
+        self.bounce_count = 0
+        self._impacts.clear()
+
+    def drain_impacts(self) -> list[Impact]:
+        impacts, self._impacts = self._impacts, []
+        return impacts
+
+    def _impact(self, speed: float, kind: str) -> None:
+        self.bounce_count += 1
+        self._impacts.append(Impact(self.x, self.y, abs(speed), self.bounce_count, kind))
+        del self._impacts[:-self.MAX_PENDING_IMPACTS]
+
+    def set_bounds(self, bounds: list[tuple[float, float, float, float]]) -> None:
+        """Work areas in canvas coordinates; adjacent areas form one open passage."""
+        valid = []
+        for left, top, right, bottom in bounds:
+            if (not all(math.isfinite(v) for v in (left, top, right, bottom))
+                    or right <= left or bottom <= top):
+                raise ValueError("Monitor bounds must be finite, non-empty rectangles.")
+            valid.append((left, top, right, bottom))
+        self._bounds = valid
+
+    @staticmethod
+    def _merge_intervals(intervals):
+        merged = []
+        for left, right in sorted(intervals):
+            if merged and left <= merged[-1][1] + 1e-8:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], right))
+            else:
+                merged.append((left, right))
+        return merged
+
+    def _axis_limits(self, x: float, y: float, horizontal: bool):
+        bounds = self._bounds or [(0.0, 0.0, self.width, self.height)]
+        # Sweep the union of work areas before adding body margins. This keeps
+        # monitor seams open even when the body overlaps two display rectangles.
+        if horizontal:
+            edges = sorted({value for rect in bounds for value in (rect[0], rect[2])})
+            spans = []
+            for a, b in zip(edges, edges[1:]):
+                midpoint = (a + b) / 2
+                coverage = self._merge_intervals([(top, bottom) for left, top, right, bottom in bounds
+                                                  if left <= midpoint <= right])
+                if any(top - 1e-8 <= y - self.HEAD_ROOM and y <= bottom + 1e-8
+                       for top, bottom in coverage):
+                    spans.append((a, b))
+            intervals = [(a + self.BODY_MARGIN, b - self.BODY_MARGIN)
+                         for a, b in self._merge_intervals(spans)
+                         if b - a >= 2 * self.BODY_MARGIN]
+            position = x
+        else:
+            edges = sorted({value for rect in bounds for value in (rect[1], rect[3])})
+            spans = []
+            for a, b in zip(edges, edges[1:]):
+                midpoint = (a + b) / 2
+                coverage = self._merge_intervals([(left, right) for left, top, right, bottom in bounds
+                                                  if top <= midpoint <= bottom])
+                if any(left - 1e-8 <= x - self.BODY_MARGIN
+                       and x + self.BODY_MARGIN <= right + 1e-8 for left, right in coverage):
+                    spans.append((a, b))
+            intervals = [(a + self.HEAD_ROOM, b)
+                         for a, b in self._merge_intervals(spans)
+                         if b - a >= self.HEAD_ROOM]
+            position = y
+        if not intervals:
+            return ((self.BODY_MARGIN, self.width - self.BODY_MARGIN) if horizontal
+                    else (self.HEAD_ROOM, self.height))
+        return min(intervals, key=lambda ab: abs(position - max(ab[0], min(ab[1], position))))
 
     def _clamp_x(self, x: float) -> float:
         return max(self.BODY_MARGIN, min(self.width - self.BODY_MARGIN, float(x)))
@@ -76,7 +168,8 @@ class Motion:
 
     def _set_mode(self) -> None:
         if self.grounded:
-            self.mode = "walk" if self.target_x is not None else "idle"
+            self.mode = ("fall" if self._throwing else
+                         "walk" if self.target_x is not None else "idle")
         else:
             self.mode = "jump" if self.vy < 0 else "fall"
 
@@ -96,6 +189,10 @@ class Motion:
                          surface.y + dy, surface.kind)
             for key, surface in self._surfaces.items()
         }
+        self._bounds = [(left + dx, top + dy, right + dx, bottom + dy)
+                        for left, top, right, bottom in self._bounds]
+        self._impacts = [Impact(i.x + dx, i.y + dy, i.speed, i.count, i.kind)
+                         for i in self._impacts]
         if self._leap is not None:
             self._leap.start_x += dx
             self._leap.start_y += dy
@@ -146,7 +243,7 @@ class Motion:
             return
 
         # Initial placement and monitor changes may put the feet on a floor.
-        if self.vy >= 0:
+        if self.vy >= 0 and not self._throwing:
             for surface in self._surfaces.values():
                 if (surface.kind == "floor" and abs(self.y - surface.y) <= 2
                         and self._contains(surface, self.x)):
@@ -159,6 +256,7 @@ class Motion:
     def walk_to(self, x: float) -> None:
         if not math.isfinite(x):
             raise ValueError("The destination must be finite.")
+        self._reset_throw()
         self._leap = None
         self.target_x = self._clamp_x(x)
         surface = self.support
@@ -171,6 +269,7 @@ class Motion:
     def jump(self) -> bool:
         if not self.grounded:
             return False
+        self._reset_throw()
         self.support_key = None
         self._ignored_key = None
         self.vy = -self.JUMP_SPEED
@@ -182,6 +281,7 @@ class Motion:
         if (surface is None or self._limits(surface) is None
                 or not self.HEAD_ROOM <= surface.y <= self.height):
             return False
+        self._reset_throw()
         start_y = max(self.HEAD_ROOM, self.y)
         arc = min(70.0, max(0.0, min(start_y, surface.y) - self.HEAD_ROOM))
         self._leap = _Leap(key, self.x, start_y, arc)
@@ -197,6 +297,7 @@ class Motion:
     def drop(self) -> bool:
         if self.support is None or self.support.kind != "window":
             return False
+        self._reset_throw()
         self._ignored_key = self.support_key
         self.support_key = None
         self.target_x = None
@@ -205,6 +306,7 @@ class Motion:
         return True
 
     def stop(self) -> None:
+        self._reset_throw()
         self._leap = None
         self.target_x = None
         self.vx = 0.0
@@ -213,6 +315,7 @@ class Motion:
     def drag_to(self, x: float, y: float) -> None:
         if not math.isfinite(x) or not math.isfinite(y):
             raise ValueError("The drag coordinates must be finite.")
+        self._reset_throw()
         self._leap = None
         self.support_key = None
         self._ignored_key = None
@@ -225,11 +328,13 @@ class Motion:
     def release(self, vx: float = 0, vy: float = 0) -> None:
         if not math.isfinite(vx) or not math.isfinite(vy):
             raise ValueError("The release velocity must be finite.")
+        self._reset_throw()
         self._leap = None
         self.support_key = None
         self.target_x = None
         self.vx = max(-self.MAX_THROW_SPEED, min(self.MAX_THROW_SPEED, float(vx)))
         self.vy = max(-self.MAX_THROW_SPEED, min(self.MAX_THROW_SPEED, float(vy)))
+        self._throwing = math.hypot(self.vx, self.vy) >= self.MIN_BOUNCE_SPEED
         if self.vx:
             self.direction = 1 if self.vx > 0 else -1
         self._set_mode()
@@ -250,6 +355,7 @@ class Motion:
             self._step_leap(dt)
             return
 
+        old_x = self.x
         if self.target_x is not None:
             distance = self.target_x - self.x
             travel = self.WALK_SPEED * dt
@@ -263,18 +369,28 @@ class Motion:
                 self.direction = 1 if distance >= 0 else -1
         elif self.vx:
             # Exact exponential drag gives consistent throws across frame rates.
-            decay = math.exp(-1.5 * dt)
-            self.x += self.vx * (1 - decay) / 1.5
+            damping = (1.8 if self.grounded else 0.25) if self._throwing else 1.5
+            decay = math.exp(-damping * dt)
+            self.x += self.vx * (1 - decay) / damping
             self.vx *= decay
-        clamped_x = self._clamp_x(self.x)
-        if clamped_x != self.x:
-            self.vx = 0.0
-            self.x = clamped_x
+        left, right = self._axis_limits(old_x, self.y, horizontal=True)
+        if self.x < left or self.x > right:
+            self.x = max(left, min(right, self.x))
+            speed = abs(self.vx)
+            if self._throwing and speed >= self.MIN_BOUNCE_SPEED:
+                self.vx = speed * self.WALL_RESTITUTION * (1 if self.x == left else -1)
+                self.direction = 1 if self.vx > 0 else -1
+                self._impact(speed, "wall")
+            else:
+                self.vx = 0.0
 
         surface = self.support
         if surface is not None:
             if self._contains(surface, self.x):
                 self.y, self.vy = surface.y, 0.0
+                if self._throwing and abs(self.vx) < self.MIN_BOUNCE_SPEED:
+                    self._throwing = False
+                    self.vx = 0.0
                 self._set_mode()
                 return
             self.support_key = None
@@ -283,8 +399,15 @@ class Motion:
         old_y = self.y
         self.y += self.vy * dt + 0.5 * self.GRAVITY * dt * dt
         self.vy += self.GRAVITY * dt
-        if self.y < self.HEAD_ROOM:
-            self.y, self.vy = self.HEAD_ROOM, max(0.0, self.vy)
+        ceiling, bottom = self._axis_limits(self.x, old_y, horizontal=False)
+        if self.y < ceiling:
+            self.y = ceiling
+            speed = abs(self.vy)
+            if self._throwing and speed >= self.MIN_BOUNCE_SPEED:
+                self.vy = speed * self.WALL_RESTITUTION
+                self._impact(speed, "ceiling")
+            else:
+                self.vy = max(0.0, self.vy)
 
         if self.vy >= 0 and self.y >= old_y:
             crossed = [surface for surface in self._surfaces.values()
@@ -293,13 +416,22 @@ class Motion:
                        and self._contains(surface, self.x)]
             if crossed:
                 landed = min(crossed, key=lambda item: item.y)
-                self.support_key = landed.key
-                self.y, self.vy = landed.y, 0.0
-                if landed.kind == "window" and self.target_x is not None:
-                    limits = self._limits(landed)
-                    self.target_x = max(limits[0], min(limits[1], self.target_x))
-                if self.target_x is None:
-                    self.vx = 0.0
+                speed = self.vy
+                self.y = landed.y
+                if self._throwing and speed >= self.MIN_BOUNCE_SPEED:
+                    self.support_key = None
+                    self.vy = -speed * self.FLOOR_RESTITUTION
+                    self.vx *= 0.8
+                    self._impact(speed, "floor" if landed.kind == "floor" else "window")
+                else:
+                    self.support_key = landed.key
+                    self.vy = 0.0
+                    self._throwing = self._throwing and abs(self.vx) >= self.MIN_BOUNCE_SPEED
+                    if landed.kind == "window" and self.target_x is not None:
+                        limits = self._limits(landed)
+                        self.target_x = max(limits[0], min(limits[1], self.target_x))
+                    if self.target_x is None and not self._throwing:
+                        self.vx = 0.0
 
         ignored = self._surfaces.get(self._ignored_key)
         if ignored is not None and self.y > ignored.y + 4:

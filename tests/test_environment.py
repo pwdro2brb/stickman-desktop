@@ -42,8 +42,8 @@ def test_monitor_floors_use_work_areas_and_translate_the_virtual_origin(primary,
     surfaces = desktop_surfaces([primary, left], [], (-1000, -200))
 
     assert surfaces == [
-        Surface(f"monitor:{primary.rect}", 1000, 2200, 988, "floor"),
-        Surface(f"monitor:{left.rect}", 30, 1000, 788, "floor"),
+        Surface(f"monitor:{primary.rect}", 1000, 2200, 1057, "floor"),
+        Surface(f"monitor:{left.rect}", 30, 1000, 857, "floor"),
     ]
 
 
@@ -52,8 +52,8 @@ def test_monitor_floors_use_work_areas_and_translate_the_virtual_origin(primary,
     (134, 100, True),
     (200, 79, False),
     (200, 80, True),
-    (764, 100, True),
-    (765, 100, False),
+    (836, 100, True),
+    (837, 100, False),
 ])
 def test_window_edges_require_headroom_width_and_clearance_above_floor(primary, top, width, eligible):
     window = WindowInfo(10, "Editor", (100, top, 100 + width, top + 100))
@@ -62,7 +62,7 @@ def test_window_edges_require_headroom_width_and_clearance_above_floor(primary, 
 
     assert bool(surfaces) is eligible
     if eligible:
-        assert surfaces == [Surface("window:10", 100, 100 + width, top)]
+        assert surfaces == [Surface("window:10", 100, 100 + width, top - 3)]
 
 
 def test_window_edge_is_clipped_to_usable_monitor_area(primary, left):
@@ -71,7 +71,7 @@ def test_window_edge_is_clipped_to_usable_monitor_area(primary, left):
     surfaces = windows_only(desktop_surfaces([primary, left], [across_displays], (-1000, -200)))
 
     # Join the continuous edge across both displays without extending behind the left taskbar.
-    assert surfaces == [Surface("window:10", 30, 1400, 400)]
+    assert surfaces == [Surface("window:10", 30, 1400, 397)]
 
 
 def test_support_prefers_current_monitor_segment_in_local_coordinates(primary, left):
@@ -84,7 +84,7 @@ def test_support_prefers_current_monitor_segment_in_local_coordinates(primary, l
     ))
 
     # Local X 1200 is global X 200, inside the narrower segment on the primary display.
-    assert surfaces == [Surface("window:10", 1000, 1400, 400)]
+    assert surfaces == [Surface("window:10", 1000, 1400, 397)]
 
 
 def test_continuous_edge_across_adjacent_monitors_is_one_platform():
@@ -94,7 +94,7 @@ def test_continuous_edge_across_adjacent_monitors_is_one_platform():
 
     surfaces = windows_only(desktop_surfaces([first, second], [window], (0, 0)))
 
-    assert surfaces == [Surface("window:10", 100, 1700, 200)]
+    assert surfaces == [Surface("window:10", 100, 1700, 197)]
 
 
 def test_real_gap_between_monitors_keeps_platform_segments_separate():
@@ -107,8 +107,8 @@ def test_real_gap_between_monitors_keeps_platform_segments_separate():
         [first, second], [window], (0, 0), support_key="window:10", character_x=1500,
     ))
 
-    assert default == [Surface("window:10", 100, 1000, 200)]
-    assert standing_on_right == [Surface("window:10", 1100, 1800, 200)]
+    assert default == [Surface("window:10", 100, 1000, 197)]
+    assert standing_on_right == [Surface("window:10", 1100, 1800, 197)]
 
 
 def test_catalog_removal_of_minimized_or_closed_window_removes_its_platform(primary):
@@ -116,7 +116,7 @@ def test_catalog_removal_of_minimized_or_closed_window_removes_its_platform(prim
     present = desktop_surfaces([primary], [window], (0, 0))
     removed = desktop_surfaces([primary], [], (0, 0))
 
-    assert windows_only(present) == [Surface("window:10", 100, 800, 200)]
+    assert windows_only(present) == [Surface("window:10", 100, 800, 197)]
     assert windows_only(removed) == []
     assert [surface for surface in present if surface.kind == "floor"] == removed
 
@@ -127,7 +127,7 @@ def test_higher_window_can_cover_an_entire_lower_edge(primary):
 
     surfaces = windows_only(desktop_surfaces([primary], [front, behind], (0, 0)))
 
-    assert surfaces == [Surface("window:20", 50, 1000, 150)]
+    assert surfaces == [Surface("window:20", 50, 1000, 147)]
 
 
 def test_partly_covered_edge_uses_the_widest_exposed_segment(primary):
@@ -137,8 +137,8 @@ def test_partly_covered_edge_uses_the_widest_exposed_segment(primary):
     surfaces = windows_only(desktop_surfaces([primary], [front, behind], (0, 0)))
 
     assert surfaces == [
-        Surface("window:20", 200, 700, 150),
-        Surface("window:10", 700, 900, 300),
+        Surface("window:20", 200, 700, 147),
+        Surface("window:10", 700, 900, 297),
     ]
 
 
@@ -171,7 +171,7 @@ def test_window_below_in_z_order_does_not_cover_a_higher_edge(primary):
     surfaces = desktop_surfaces([primary], [higher, lower], (0, 0))
 
     assert next(surface for surface in surfaces if surface.key == "window:10") == Surface(
-        "window:10", 100, 900, 300,
+        "window:10", 100, 900, 297,
     )
 
 
@@ -182,7 +182,7 @@ def test_window_ending_at_an_edge_does_not_cover_that_edge(primary):
     surfaces = desktop_surfaces([primary], [front, behind], (0, 0))
 
     assert next(surface for surface in surfaces if surface.key == "window:10") == Surface(
-        "window:10", 100, 900, 300,
+        "window:10", 100, 900, 297,
     )
 
 
@@ -206,3 +206,26 @@ def test_platform_keys_survive_window_movement_and_taskbar_changes(primary):
 
     assert [surface.key for surface in before] == [surface.key for surface in after]
     assert before != after
+
+
+@pytest.mark.parametrize("work_rect", [
+    (0, 0, 1920, 1032),   # Bottom taskbar already removed by Windows.
+    (48, 0, 1920, 1080),  # Left taskbar does not change the usable bottom.
+    (0, 48, 1920, 1080),  # Top taskbar is already reflected in the work area.
+])
+def test_default_floor_touches_usable_bottom_without_subtracting_taskbar_twice(work_rect):
+    monitor = MonitorInfo((0, 0, 1920, 1080), work_rect, True)
+    floor, = desktop_surfaces([monitor], [], (0, 0))
+    assert floor.y == work_rect[3] - 3
+    assert (floor.left, floor.right) == (work_rect[0], work_rect[2])
+
+
+def test_explicit_ground_offset_remains_additional_custom_clearance(primary):
+    floor, = desktop_surfaces([primary], [], (0, 0), ground_offset=20)
+    assert floor.y == primary.work_rect[3] - 20 - 3
+
+
+def test_window_contact_accounts_for_rounded_foot_stroke(primary):
+    window = WindowInfo(10, "Editor", (100, 200, 800, 600))
+    platform, = windows_only(desktop_surfaces([primary], [window], (0, 0)))
+    assert platform.y + 3 == window.rect[1]

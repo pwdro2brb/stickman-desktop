@@ -20,6 +20,11 @@
 
 ## 0.4 - Animation system
 
+- [x] Smooth head and eye tracking of the pointer
+- [x] Walking with planted foot contacts and articulated joint solving
+- [x] Velocity-based throws, damped bounces and impact reactions
+- [x] Correct foot contact with the taskbar and window edges
+
 - [ ] Replace procedural limbs with an animation state machine
 - [ ] Load original sprite packs
 - [ ] Configurable scenes in JSON

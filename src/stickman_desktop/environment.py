@@ -4,6 +4,8 @@ from __future__ import annotations
 from .motion import Surface
 from .windows import MonitorInfo, WindowInfo
 
+FOOT_CLEARANCE = 3  # Half the rounded 5px limb stroke, rounded up.
+
 
 def virtual_bounds(monitors: list[MonitorInfo]) -> tuple[int, int, int, int]:
     if not monitors:
@@ -23,7 +25,7 @@ def nearest_monitor(monitors: list[MonitorInfo], x: float, y: float) -> MonitorI
 
 def desktop_surfaces(
     monitors: list[MonitorInfo], windows: list[WindowInfo],
-    origin: tuple[int, int], ground_offset: float = 72,
+    origin: tuple[int, int], ground_offset: float = 0,
     support_key: str | None = None, character_x: float | None = None,
 ) -> list[Surface]:
     """Use work areas for floors and exposed top edges for window platforms.
@@ -37,7 +39,7 @@ def desktop_surfaces(
         left, top, right, bottom = monitor.work_rect
         result.append(Surface(
             f"monitor:{monitor.rect}", left - ox, right - ox,
-            max(top + 104, bottom - ground_offset) - oy, "floor",
+            max(top + 104, bottom - ground_offset - FOOT_CLEARANCE) - oy, "floor",
         ))
     for index, window in enumerate(windows):
         left, top, right, _bottom = window.rect
@@ -77,5 +79,5 @@ def desktop_surfaces(
             and segment[0] + 24 <= character_x + ox <= segment[1] - 24
         )]
         a, b = max(preferred or segments, key=lambda segment: segment[1] - segment[0])
-        result.append(Surface(key, a - ox, b - ox, top - oy))
+        result.append(Surface(key, a - ox, b - ox, top - oy - FOOT_CLEARANCE))
     return result

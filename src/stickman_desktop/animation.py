@@ -5,13 +5,36 @@ import random
 from dataclasses import dataclass
 
 
+def solve_two_bone(start, target, upper: float, lower: float, bend: int = 1):
+    """Solve a two-segment limb analytically, with a consistent bend direction.
+
+    Unreachable targets are projected onto the reach circle, never stretching
+    the bones. The solution is derived from the triangle's law of cosines.
+    """
+    sx, sy = start
+    dx, dy = target[0] - sx, target[1] - sy
+    distance = math.hypot(dx, dy)
+    ux, uy = (dx / distance, dy / distance) if distance > 1e-8 else (0.0, 1.0)
+    reach = max(abs(upper - lower) + 1e-6, min(upper + lower - 1e-6, distance))
+    along = (upper * upper - lower * lower + reach * reach) / (2 * reach)
+    height = math.sqrt(max(0.0, upper * upper - along * along))
+    joint = (sx + ux * along - uy * height * bend,
+             sy + uy * along + ux * height * bend)
+    end = (sx + ux * reach, sy + uy * reach)
+    return joint, end
+
+
 class CharacterRenderer:
-    """A small, original articulated figure anchored at its feet on a Tk canvas."""
+    """Original articulated figure with contact-aware feet and a soft gaze."""
+
+    STRIDE = 80.0
+    STANCE = 0.48
+    FOOT_CENTER = 0.0  # Motion surfaces already include the 3px stroke clearance.
+    LEG_LENGTH = 21.0
+    ARM_LENGTH = 18.0
 
     def __init__(self, canvas, color: str, tag: str = "character") -> None:
-        self.canvas = canvas
-        self.color = color
-        self.tag = tag
+        self.canvas, self.color, self.tag = canvas, color, tag
         self.parts: dict[str, int] = {}
         for name in ("arm2", "leg2", "body", "arm1", "leg1"):
             self.parts[name] = canvas.create_line(
@@ -25,83 +48,160 @@ class CharacterRenderer:
             self.parts[name] = canvas.create_oval(
                 0, 0, 1, 1, outline="", fill="#fff4de", tags=(tag,),
             )
+        self._last_x: float | None = None
+        self._last_phase: float | None = None
+        self._last_mode = "idle"
+        self._facing = 1
+        self._gait = 0.0
+        self._walk_blend = 0.0
+        self._look = (0.0, 0.0)
+        self._pose: dict[str, tuple[float, float]] | None = None
+        self._turn_feet = None
+        self._turn_time = 0.16
 
     def set_visible(self, visible: bool) -> None:
-        state = "normal" if visible else "hidden"
         for item in self.parts.values():
-            self.canvas.itemconfigure(item, state=state)
+            self.canvas.itemconfigure(item, state="normal" if visible else "hidden")
+
+    @classmethod
+    def _foot(cls, cycle: float) -> tuple[float, float]:
+        cycle %= 1.0
+        amplitude = cls.STRIDE * cls.STANCE / 2
+        if cycle < cls.STANCE:
+            # Root moves +stride*phase while the planted foot moves the inverse
+            # distance in root space, exactly cancelling foot sliding.
+            return amplitude - cls.STRIDE * cycle, cls.FOOT_CENTER
+        progress = (cycle - cls.STANCE) / (1 - cls.STANCE)
+        eased = progress * progress * (3 - 2 * progress)
+        return (-amplitude + 2 * amplitude * eased,
+                cls.FOOT_CENTER - 9 * math.sin(math.pi * progress) ** 2)
 
     def render(self, x: float, y: float, direction: int, mode: str,
-               phase: float, vy: float = 0) -> None:
-        """Update poses without creating items; phase is a clock in seconds."""
-        if not all(math.isfinite(value) for value in (x, y, direction, phase, vy)):
-            raise ValueError("Character coordinates and animation time must be finite.")
+               phase: float, vy: float = 0, *, gaze: tuple[float, float] | None = None,
+               dt: float | None = None, vx: float | None = None) -> None:
+        values = [x, y, direction, phase, vy]
+        if gaze is not None:
+            values.extend(gaze)
+        if dt is not None:
+            values.append(dt)
+        if vx is not None:
+            values.append(vx)
+        if not all(math.isfinite(value) for value in values) or (dt is not None and dt < 0):
+            raise ValueError("Character coordinates and elapsed time must be finite and valid.")
+        elapsed = dt if dt is not None else (
+            max(0.0, phase - self._last_phase) if self._last_phase is not None else 1 / 60
+        )
+        elapsed = min(0.1, elapsed)
+        # Legacy callers can request another pose at the same clock instant.
+        if dt is None and elapsed == 0:
+            elapsed = 1 / 60
         facing = 1 if direction >= 0 else -1
-        bob = math.sin(phase * 2.4) * 1.3
-        lean = math.sin(phase * 1.2) * 0.6
-        shoulder_y, hip_y = y - 55 + bob, y - 24 + bob
-        arm1 = (x + facing * 14, y - 42 + bob, x + facing * 20, y - 29 + bob)
-        arm2 = (x - facing * 12, y - 42 + bob, x - facing * 17, y - 30 + bob)
-        leg1 = (x + facing * 9, y - 13, x + facing * 16, y)
-        leg2 = (x - facing * 8, y - 12, x - facing * 15, y)
-
+        if facing != self._facing and self._pose is not None:
+            self._turn_feet = (self._pose["foot1"], self._pose["foot2"])
+            self._turn_time = 0.0
+        self._facing = facing
+        self._turn_time += elapsed
+        dx = x - self._last_x if self._last_x is not None else 0.0
+        speed = abs(vx) if vx is not None else (abs(dx) / elapsed if elapsed > 0 else 0.0)
         if mode == "walk":
-            stride = math.sin(phase * 10)
-            bob = -abs(math.cos(phase * 10)) * 2
-            lean = facing * 3
-            shoulder_y, hip_y = y - 55 + bob, y - 24 + bob
-            arm1 = (x + facing * (10 - stride * 7), y - 43,
-                    x - facing * stride * 22, y - 31)
-            arm2 = (x - facing * (10 - stride * 7), y - 43,
-                    x + facing * stride * 22, y - 32)
-            leg1 = (x + facing * (8 + stride * 5), y - 13,
-                    x + facing * stride * 20, y - max(0, stride) * 7)
-            leg2 = (x - facing * (8 - stride * 5), y - 13,
-                    x - facing * stride * 20, y - max(0, -stride) * 7)
-        elif mode in {"jump", "fall"}:
+            if self._last_x is None:
+                distance = speed * elapsed
+            elif vx is not None and abs(dx) > max(2.0, speed * elapsed * 2 + 1):
+                distance = speed * elapsed  # A window was translated under the rider.
+            else:
+                distance = abs(dx)
+            self._gait = (self._gait + distance / self.STRIDE) % 1.0
+        self._walk_blend = max(0.0, min(1.0, self._walk_blend + (
+            elapsed / 0.16 if mode == "walk" else -elapsed / 0.16
+        )))
+        walk = self._walk_blend
+        pulse = math.sin(self._gait * math.tau)
+        breathing = math.sin(phase * 2.4) * 0.45 * (1 - walk)
+        hip = (facing * 0.6 * walk, -37.5 + walk + breathing + walk * math.cos(self._gait * math.tau * 2) * 0.35)
+        shoulder = (facing * 2.4 * walk, -62.5 + breathing + walk * 0.4 * math.cos(self._gait * math.tau * 2))
+        first, second = self._foot(self._gait), self._foot(self._gait + 0.5)
+        foot1 = (12 * (1 - walk) + facing * first[0] * walk,
+                 self.FOOT_CENTER * (1 - walk) + first[1] * walk)
+        foot2 = (-12 * (1 - walk) + facing * second[0] * walk,
+                 self.FOOT_CENTER * (1 - walk) + second[1] * walk)
+        hand1 = (facing * (8 - pulse * 15 * walk), -29.0 + walk * 2 * max(0, pulse))
+        hand2 = (-facing * (8 - pulse * 15 * walk), -29.0 + walk * 2 * max(0, -pulse))
+        if mode in {"jump", "fall"}:
             rising = mode == "jump" and vy <= 0
-            lean = facing * (3 if rising else -2)
-            shoulder_y, hip_y = y - 57, y - 24
-            arm1 = (x + facing * 20, y - 66, x + facing * 30, y - (80 if rising else 59))
-            arm2 = (x - facing * 19, y - 62, x - facing * 29, y - (72 if rising else 52))
-            leg1 = (x + facing * 16, y - 15, x + facing * 10, y - (10 if rising else 0))
-            leg2 = (x - facing * 14, y - 12, x - facing * 22, y - (6 if rising else 1))
+            hip, shoulder = (facing * 1.0, -37.0), (facing * 3.0, -61.0)
+            hand1 = (facing * 25, -80 if rising else -62)
+            hand2 = (-facing * 22, -73 if rising else -55)
+            foot1 = (facing * 15, -12 if rising else self.FOOT_CENTER)
+            foot2 = (-facing * 12, -7 if rising else self.FOOT_CENTER)
         elif mode == "drag":
-            sway = math.sin(phase * 8) * 6
-            lean = sway * 0.4
-            shoulder_y, hip_y = y - 56, y - 23
-            arm1 = (x + 18, y - 67, x + 11, y - 78)
-            arm2 = (x - 18, y - 64, x - 12, y - 76)
-            leg1 = (x + 8 + sway, y - 13, x + 12 + sway, y)
-            leg2 = (x - 8 - sway, y - 12, x - 12 - sway, y - 3)
+            sway = math.sin(phase * 4.2) * 2
+            hip, shoulder = (sway * 0.5, -39.0), (sway, -63.0)
+            hand1, hand2 = (12, -87), (-12, -85)
+            foot1, foot2 = (10 + sway, self.FOOT_CENTER), (-10 + sway, -4.0)
         elif mode == "wave":
-            arm1 = (x + facing * 23, y - 67,
-                    x + facing * (25 + math.sin(phase * 12) * 7), y - 88)
+            hand1 = (facing * (23 + math.sin(phase * 8) * 4), -87)
         elif mode == "fight":
-            punch = (math.sin(phase * 13) + 1) * 0.5
-            lean = facing * 7
-            shoulder_y, hip_y = y - 51, y - 21
-            arm1 = (x + facing * 25, y - 57, x + facing * (28 + punch * 25), y - 54)
-            arm2 = (x + facing * 5, y - 43, x + facing * (12 + (1 - punch) * 20), y - 56)
-            leg1 = (x + facing * 17, y - 13, x + facing * 27, y)
-            leg2 = (x - facing * 13, y - 10, x - facing * 22, y)
-
-        neck_x = x + lean
-        head_x, head_y = x + lean * 1.3, shoulder_y - 24
+            punch = (math.sin(phase * 10) + 1) * 0.5
+            hip, shoulder = (facing * 2, -36.0), (facing * 6, -60.0)
+            hand1, hand2 = (facing * (25 + punch * 9), -59), (facing * 14, -68)
+            foot1, foot2 = (facing * 18, self.FOOT_CENTER), (-facing * 18, self.FOOT_CENTER)
+        if self._turn_feet is not None and self._turn_time < 0.16:
+            weight = self._turn_time / 0.16
+            weight = weight * weight * (3 - 2 * weight)
+            foot1 = tuple(a + (b - a) * weight for a, b in zip(self._turn_feet[0], foot1))
+            foot2 = tuple(a + (b - a) * weight for a, b in zip(self._turn_feet[1], foot2))
+        targets = {"hip": hip, "shoulder": shoulder, "hand1": hand1,
+                   "hand2": hand2, "foot1": foot1, "foot2": foot2}
+        alpha = -math.expm1(-20 * elapsed)
+        if self._pose is None:
+            self._pose = targets
+        else:
+            self._pose = {name: tuple(a + (b - a) * alpha for a, b in zip(self._pose[name], value))
+                          for name, value in targets.items()}
+            # Contact positions are constraints, not interpolated joint angles.
+            # Blending them after the transition would make the planted feet slide.
+            if mode == "walk" and walk >= 1 and self._turn_time >= 0.16:
+                self._pose["foot1"], self._pose["foot2"] = foot1, foot2
+            elif mode in {"idle", "wave", "fight"}:
+                for name in ("foot1", "foot2"):
+                    px, py = self._pose[name]
+                    self._pose[name] = (px, min(self.FOOT_CENTER, py))
+        pose = self._pose
+        hip = (x + pose["hip"][0], y + pose["hip"][1])
+        shoulder = (x + pose["shoulder"][0], y + pose["shoulder"][1])
+        if gaze is None:
+            desired = (facing * 0.4, 0.0)
+        else:
+            gx, gy = (gaze[0] - shoulder[0]) / 100, (gaze[1] - (shoulder[1] - 20)) / 100
+            length = max(1.0, math.hypot(gx, gy))
+            desired = (gx / length, gy / length)
+        look_alpha = -math.expm1(-10 * elapsed)
+        self._look = tuple(a + (b - a) * look_alpha for a, b in zip(self._look, desired))
+        look_x, look_y = self._look
+        head_x = shoulder[0] + look_x * 2.8
+        head_y = shoulder[1] - 20 + look_y * 1.8
         coordinates = {
-            "body": (neck_x, shoulder_y - 5, x + lean * 0.4, shoulder_y + 14, x, hip_y),
-            "arm1": (neck_x, shoulder_y, *arm1),
-            "arm2": (neck_x, shoulder_y + 1, *arm2),
-            "leg1": (x, hip_y, *leg1),
-            "leg2": (x, hip_y, *leg2),
+            "body": (head_x, head_y + 14, *shoulder, *hip),
             "head": (head_x - 14.5, head_y - 14.5, head_x + 14.5, head_y + 14.5),
         }
-        blink = 0.6 if phase % 4.7 < 0.12 else 2.1
+        for name, start, target_name, length, bend in (
+            ("leg1", hip, "foot1", self.LEG_LENGTH, -facing),
+            ("leg2", hip, "foot2", self.LEG_LENGTH, -facing),
+            ("arm1", shoulder, "hand1", self.ARM_LENGTH, -facing),
+            ("arm2", shoulder, "hand2", self.ARM_LENGTH, facing),
+        ):
+            endpoint = (x + pose[target_name][0], y + pose[target_name][1])
+            joint, endpoint = solve_two_bone(start, endpoint, length, length, bend)
+            coordinates[name] = (*start, *joint, *endpoint)
+        blink = 0.45 if phase % 4.7 < 0.12 else 1.8
         for index, name in enumerate(("eye1", "eye2")):
-            eye_x = head_x + facing * (3 + index * 6)
-            coordinates[name] = (eye_x - 1.4, head_y - blink, eye_x + 1.4, head_y + blink)
+            side = -1 if index == 0 else 1
+            eye_x = head_x + side * 4.3 + look_x * 4
+            eye_y = head_y + look_y * 3 + side * look_x * 0.65
+            coordinates[name] = (eye_x - 1.4, eye_y - blink, eye_x + 1.4, eye_y + blink)
         for name, values in coordinates.items():
             self.canvas.coords(self.parts[name], *values)
+        self._last_x, self._last_phase, self._last_mode = x, phase, mode
 
 
 @dataclass

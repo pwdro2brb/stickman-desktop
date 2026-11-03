@@ -20,8 +20,12 @@ def desktop():
     desktop.monitors = [MonitorInfo((0, 0, 1200, 900), (0, 0, 1200, 850), True)]
     desktop.origin_x = desktop.origin_y = 0
     desktop.sw, desktop.sh = 1200, 900
-    desktop.ground_offset = 72
-    desktop.motion = Motion(1200, 900, 200, 778)
+    desktop.ground_offset = 0
+    desktop.motion = Motion(1200, 900, 200, 847)
+    desktop.color = "#ff7a00"
+    desktop._gaze = None
+    desktop._hurt_level = 0
+    desktop._hurt_cooldown = 0
     desktop.visible_windows = []
     desktop.last_external_window = None
     desktop.behavior = "manual"
@@ -61,7 +65,7 @@ def test_climb_targets_external_window_and_lands_on_its_edge(desktop):
 
     desktop._refresh_windows.assert_called_once_with()
     assert desktop.motion.support_key == "window:100"
-    assert (desktop.x, desktop.y) == pytest.approx((450, 200))
+    assert (desktop.x, desktop.y) == pytest.approx((450, 197))
     assert desktop.behavior == "manual"
 
 
@@ -294,3 +298,74 @@ def test_topology_change_cancels_effects_and_story_jobs_using_old_coordinates(de
     desktop.canvas.delete.assert_called_once_with(41)
     desktop.particles.clear.assert_called_once_with()
     assert desktop.motion.target_x is None
+
+
+def test_gaze_tracks_global_cursor_without_starting_follow_mode(desktop, monkeypatch):
+    desktop.origin_x, desktop.origin_y = -1000, -200
+    monkeypatch.setattr(app_module, "cursor_position", lambda: (-300, -50))
+    before = (desktop.x, desktop.y, desktop.motion.target_x)
+
+    desktop._update_gaze()
+
+    assert desktop._gaze == (700, 150)
+    assert (desktop.x, desktop.y, desktop.motion.target_x) == before
+    assert desktop.behavior == "manual"
+
+
+def test_cursor_read_failure_returns_gaze_to_neutral(desktop, monkeypatch):
+    desktop._gaze = (100, 200)
+    monkeypatch.setattr(app_module, "cursor_position", Mock(side_effect=OSError("unavailable")))
+    desktop._update_gaze()
+    assert desktop._gaze is None
+
+
+def test_release_includes_final_pointer_event_and_fast_event_intervals(desktop, monkeypatch):
+    monkeypatch.setattr(app_module.time, "monotonic", Mock(side_effect=[100, 100.01, 100.02]))
+    desktop._begin_drag(SimpleNamespace(x_root=200, y_root=800))
+    desktop._drag(SimpleNamespace(x_root=210, y_root=800))
+    desktop._end_drag(SimpleNamespace(x_root=230, y_root=800))
+
+    assert desktop.motion.vx == pytest.approx(1500)
+    assert desktop._drag_anchor is None
+    desktop.canvas.grab_release.assert_called_once_with()
+
+
+def test_drag_near_taskbar_cannot_release_below_floor(desktop, monkeypatch):
+    monkeypatch.setattr(app_module.time, "monotonic", lambda: 100)
+    desktop._begin_drag(SimpleNamespace(x_root=200, y_root=desktop.y))
+    desktop._drag(SimpleNamespace(x_root=400, y_root=1000))
+    assert desktop.y == 847
+    desktop._end_drag()
+    desktop.motion.step(0.02)
+    assert desktop.motion.grounded
+    assert desktop.y == 847
+
+
+def test_repeated_hard_bounces_react_with_cooldown_and_no_bubble_spam(desktop):
+    drain = Mock()
+    desktop.motion.drain_impacts = drain
+    def impact(count, speed=800):
+        return SimpleNamespace(x=30, y=300, count=count, speed=speed, kind="wall")
+    drain.return_value = [impact(1)]
+    desktop._react_to_impacts(1)
+    desktop.say.assert_not_called()
+    drain.return_value = [impact(2)]
+    desktop._react_to_impacts(1.1)
+    assert "Ai!" in desktop.say.call_args.args[0]
+    assert desktop.say.call_count == 1
+    drain.return_value = [impact(3), impact(4)]
+    desktop._react_to_impacts(1.2)
+    assert desktop.say.call_count == 1
+    drain.return_value = [impact(5)]
+    desktop._react_to_impacts(3)
+    assert "já chega" in desktop.say.call_args.args[0]
+    assert desktop.say.call_count == 2
+    assert desktop._hurt_level == 2
+
+
+def test_weak_bounces_do_not_produce_hurt_reaction(desktop):
+    desktop.motion.drain_impacts = Mock(return_value=[
+        SimpleNamespace(x=30, y=300, count=3, speed=190, kind="floor"),
+    ])
+    desktop._react_to_impacts(10)
+    desktop.say.assert_not_called()

@@ -2,7 +2,7 @@ import math
 
 import pytest
 
-from stickman_desktop.animation import CharacterRenderer, Particles
+from stickman_desktop.animation import CharacterRenderer, Particles, solve_two_bone
 
 
 class FakeCanvas:
@@ -141,3 +141,142 @@ def test_zero_particle_limit_disables_effects():
     particles.burst(0, 0)
     particles.step(0)
     assert not canvas.items
+
+
+def _endpoint(canvas, renderer, name):
+    return canvas.coords(renderer.parts[name])[-2:]
+
+
+def _center(canvas, renderer, name):
+    left, top, right, bottom = canvas.coords(renderer.parts[name])
+    return (left + right) / 2, (top + bottom) / 2
+
+
+def test_limb_lengths_remain_fixed_through_transitions():
+    canvas = FakeCanvas()
+    character = CharacterRenderer(canvas, "orange")
+    for frame in range(240):
+        mode = ("idle", "walk", "jump", "fall", "drag", "wave", "fight")[frame // 35 % 7]
+        character.render(200 + frame * 0.5, 300, 1, mode, frame / 60,
+                         dt=1 / 60, vx=30 if mode == "walk" else 0)
+        for name, expected in (("leg1", 21), ("leg2", 21), ("arm1", 18), ("arm2", 18)):
+            x0, y0, x1, y1, x2, y2 = canvas.coords(character.parts[name])
+            assert math.hypot(x1 - x0, y1 - y0) == pytest.approx(expected, abs=1e-6)
+            assert math.hypot(x2 - x1, y2 - y1) == pytest.approx(expected, abs=1e-6)
+
+
+def test_steady_walk_plants_feet_and_lifts_swinging_foot():
+    canvas = FakeCanvas()
+    character = CharacterRenderer(canvas, "orange")
+    previous = {}
+    planted_samples = 0
+    lifted_samples = 0
+    for frame in range(240):
+        t = frame / 60
+        character.render(200 + 140 * t, 300, 1, "walk", t, dt=1 / 60, vx=140)
+        for name in ("leg1", "leg2"):
+            foot = _endpoint(canvas, character, name)
+            if frame > 30 and abs(foot[1] - 300) < 1e-6:
+                if name in previous and abs(previous[name][1] - 300) < 1e-6:
+                    assert foot[0] == pytest.approx(previous[name][0], abs=1e-6)
+                    planted_samples += 1
+            if foot[1] < 296.5:
+                lifted_samples += 1
+            assert foot[1] <= 300 + 1e-6
+            previous[name] = foot
+    assert planted_samples > 100
+    assert lifted_samples > 50
+
+
+def test_walking_phase_depends_on_travel_not_absolute_clock():
+    first_canvas, second_canvas = FakeCanvas(), FakeCanvas()
+    first, second = CharacterRenderer(first_canvas, "orange"), CharacterRenderer(second_canvas, "orange")
+    for frame in range(180):
+        t = frame / 60
+        first.render(200 + 140 * t, 300, 1, "walk", t, dt=1 / 60, vx=140)
+        second.render(200 + 140 * t, 300, 1, "walk", t + 1000, dt=1 / 60, vx=140)
+    for name in ("leg1", "leg2"):
+        assert _endpoint(first_canvas, first, name) == pytest.approx(_endpoint(second_canvas, second, name), abs=1e-6)
+
+
+def test_walk_contact_is_consistent_at_different_frame_rates():
+    results = []
+    for fps in (30, 120):
+        canvas = FakeCanvas()
+        renderer = CharacterRenderer(canvas, "orange")
+        renderer.render(200, 300, 1, "walk", 0, dt=0, vx=140)
+        for frame in range(1, fps * 2 + 1):
+            t = frame / fps
+            renderer.render(200 + 140 * t, 300, 1, "walk", t, dt=1 / fps, vx=140)
+        results.append([_endpoint(canvas, renderer, name) for name in ("leg1", "leg2")])
+    for first, second in zip(*results):
+        assert first == pytest.approx(second, abs=0.03)
+
+
+def test_stopping_and_turning_do_not_teleport_feet():
+    canvas = FakeCanvas()
+    renderer = CharacterRenderer(canvas, "orange")
+    for frame in range(90):
+        renderer.render(200 + frame * 140 / 60, 300, 1, "walk", frame / 60, dt=1 / 60, vx=140)
+    previous = [_endpoint(canvas, renderer, name) for name in ("leg1", "leg2")]
+    x = 200 + 89 * 140 / 60
+    renderer.render(x, 300, -1, "idle", 1.5, dt=1 / 60, vx=0)
+    for name, old in zip(("leg1", "leg2"), previous):
+        assert math.dist(_endpoint(canvas, renderer, name), old) < 6
+    for frame in range(1, 120):
+        renderer.render(x, 300, -1, "idle", 1.5 + frame / 60, dt=1 / 60, vx=0)
+    assert _endpoint(canvas, renderer, "leg1")[1] == pytest.approx(300, abs=1e-6)
+    assert _endpoint(canvas, renderer, "leg2")[1] == pytest.approx(300, abs=1e-6)
+
+
+def test_gaze_moves_head_and_eyes_on_both_axes_without_turning_body():
+    canvas = FakeCanvas()
+    renderer = CharacterRenderer(canvas, "orange")
+    samples = []
+    for gaze in ((-1000, -1000), (1000, 1000)):
+        for frame in range(120):
+            renderer.render(200, 300, 1, "idle", frame / 60, gaze=gaze, dt=1 / 60, vx=0)
+        head = _center(canvas, renderer, "head")
+        eye = _center(canvas, renderer, "eye1")
+        samples.append((head, (eye[0] - head[0], eye[1] - head[1])))
+    assert samples[0][0][0] < samples[1][0][0]
+    assert samples[0][0][1] < samples[1][0][1]
+    assert samples[0][1][0] < samples[1][1][0]
+    assert samples[0][1][1] < samples[1][1][1]
+    assert renderer._facing == 1
+
+
+def test_gaze_filters_sudden_cursor_jump_and_returns_to_neutral():
+    canvas = FakeCanvas()
+    renderer = CharacterRenderer(canvas, "orange")
+    for frame in range(60):
+        renderer.render(200, 300, 1, "idle", frame / 60, gaze=(1200, 220), dt=1 / 60)
+    before = renderer._look[0]
+    renderer.render(200, 300, 1, "idle", 1, gaze=(-1200, 220), dt=1 / 60)
+    assert 0 < renderer._look[0] < before
+    for frame in range(120):
+        renderer.render(200, 300, 1, "idle", 1 + frame / 60, gaze=None, dt=1 / 60)
+    assert renderer._look[0] == pytest.approx(0.4, abs=0.001)
+    assert renderer._look[1] == pytest.approx(0, abs=0.001)
+
+
+@pytest.mark.parametrize("kwargs", [{"gaze": (float("nan"), 0)}, {"dt": -1}, {"vx": float("inf")}])
+def test_invalid_tracking_inputs_leave_canvas_unchanged(kwargs):
+    canvas = FakeCanvas()
+    renderer = CharacterRenderer(canvas, "orange")
+    initial = {key: item["coordinates"] for key, item in canvas.items.items()}
+    with pytest.raises(ValueError):
+        renderer.render(200, 300, 1, "idle", 1, **kwargs)
+    assert {key: item["coordinates"] for key, item in canvas.items.items()} == initial
+
+
+@pytest.mark.parametrize("target", [(0, 0), (12, 18), (1000, 1000), (-1000, 0)])
+def test_two_bone_solver_handles_coincident_and_unreachable_targets(target):
+    joint, endpoint = solve_two_bone((0, 0), target, 21, 21)
+    assert all(math.isfinite(value) for point in (joint, endpoint) for value in point)
+    assert math.hypot(*joint) == pytest.approx(21, abs=1e-6)
+    assert math.dist(joint, endpoint) == pytest.approx(21, abs=1e-6)
+    if math.hypot(*target) <= 42:
+        assert endpoint == pytest.approx(target, abs=1e-5)
+    else:
+        assert math.hypot(*endpoint) <= 42

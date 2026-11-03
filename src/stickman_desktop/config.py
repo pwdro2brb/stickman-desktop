@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 DEFAULT_CONFIG = {
-    "character": {"name": "Pixel", "color": "#ff7a00", "start_x": 120, "ground_offset": 72},
+    "character": {"name": "Pixel", "color": "#ff7a00", "start_x": 120, "ground_offset": 0},
     "authorized_apps": {
         "bloco de notas": ["notepad.exe"],
         "calculadora": ["calc.exe"],

@@ -6,6 +6,9 @@
 
 Renders the original articulated character and its visual sparring echo. Poses
 include breathing, walking, jumping, falling, dragging, waving and fighting.
+Walking uses stance/swing foot targets and two-bone inverse kinematics, with
+velocity-synchronized timing and smoothed pose changes. Head and eye tracking
+uses a bounded, smoothed pointer target independently of body-facing direction.
 Character parts reuse Canvas items. Impact particles have a fixed count limit
 and expire automatically; scene cancellation removes portals and scheduled callbacks.
 
@@ -68,7 +71,11 @@ move application windows as part of enumeration.
 primary flag. The overlay spans their virtual desktop bounding rectangle, whose
 origin can be negative. The app translates global Windows coordinates into local
 canvas coordinates; `andar` arguments remain global desktop X coordinates. Each
-monitor contributes its own floor at its usable bottom minus `ground_offset`.
+monitor contributes its own floor at its usable bottom minus `ground_offset`
+and the 3 px allowance for the rounded foot stroke. `ground_offset` defaults to
+zero; the work area already excludes the taskbar, so subtracting the old 72 px
+default again made the character float. Window contacts apply the same foot-stroke
+allowance.
 Topology is refreshed approximately once per second, preserving the character's
 global position when the virtual origin changes. A monitor API failure preserves
 the last known layout.
@@ -84,7 +91,11 @@ instead of immediately landing back on it. Landing considers the crossing of a
 surface during descent, rather than requiring an exact frame position.
 
 Dragging a character stroke interrupts its current activity and places it under
-pointer control. Releasing resumes physics. Double-clicking jumps and
+pointer control. Release velocity determines the throw strength. Thrown characters
+bounce against desktop boundaries with energy loss, eventually settle, and
+report strong impacts to the app for short, playful reactions after repeated
+collisions. Normal jumps still land without a throw bounce. Walking is 140 px/s,
+with gait timing tied to travel instead of a fixed absolute clock. Double-clicking jumps and
 right-clicking opens the character's action menu. Mouse interaction is disabled
 in click-through mode. `explorar` chooses visual walks and eligible window leaps;
 `seguir mouse` follows the cursor horizontally without sending mouse input.
@@ -113,6 +124,17 @@ For a desktop check, run `python run.py`, press `F2`, and enter `listar janelas`
 7. Close the list with `Esc` or **Fechar**, then reopen it; animation and hotkeys must continue.
 
 For movement and interaction checks:
+
+- With default `ground_offset: 0`, confirm the rounded feet meet the taskbar's
+  upper edge rather than hovering above it. Repeat with a side taskbar if available.
+- Move the pointer above, below and around a stationary character; confirm smooth,
+  bounded head and eye motion without turning the whole body or starting a walk.
+- Compare a slow release and a fast throw near a desktop wall. Confirm the fast
+  throw rebounds harder, loses energy across collisions and eventually rests.
+  Check that repeated strong bounces can produce a brief complaint.
+- Watch both walking directions, starting/stopping and jumping. Feet should stay
+  planted during contact and rise during the swing phase; joints should keep
+  plausible lengths.
 
 1. Place a normal application window at least 104 px below the usable monitor top.
    Select it, press `F2`, and run `subir na janela`; confirm an animated leap to its edge.
@@ -146,3 +168,12 @@ The first prototype could identify the overlay as the active window. Version 0.2
 ## Trust boundary
 
 Text entered into the command panel is parsed into predefined actions. It is never passed to a command shell. Application launch uses arrays from the allowlist in `config.json` and `shell=False`.
+
+## Animation references
+
+The implementation uses original code informed by two procedural-animation ideas:
+[Alan Zucconi's two-bone IK explanation](https://www.alanzucconi.com/2018/05/02/ik-2d-1/)
+for solving joint geometry, and
+[Kovar, Schreiner and Gleicher's footskate cleanup research](https://graphics.cs.wisc.edu/Papers/2002/KSG02/)
+for preserving planted foot contacts. These are mathematical and animation
+references; no character assets or third-party animation frames are included.

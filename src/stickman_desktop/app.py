@@ -10,7 +10,8 @@ from tkinter import ttk
 
 from .animation import CharacterRenderer, Particles
 from .config import load_config
-from .environment import desktop_surfaces, nearest_monitor, virtual_bounds
+from .environment import FOOT_CLEARANCE, desktop_surfaces, nearest_monitor, virtual_bounds
+from .gestures import PointerVelocity
 from .motion import Motion
 from .core import parse_command
 from .windows import (
@@ -61,11 +62,11 @@ class StickmanDesktop:
 
         self.name = character.get("name", "Pixel")
         self.color = character.get("color", "#ff7a00")
-        self.ground_offset = max(0.0, float(character.get("ground_offset", 72)))
+        self.ground_offset = max(0.0, float(character.get("ground_offset", 0)))
         primary = next((m for m in self.monitors if m.primary), self.monitors[0])
         pl, _pt, pr, pb = primary.work_rect
         start_x = max(pl + 28, min(pr - 28, pl + float(character.get("start_x", 120))))
-        self.motion = Motion(self.sw, self.sh, start_x - left, pb - top - self.ground_offset)
+        self.motion = Motion(self.sw, self.sh, start_x - left, pb - top - self.ground_offset - FOOT_CLEARANCE)
         self.frame = 0
         self.behavior = "manual"
         self.pose: str | None = None
@@ -79,6 +80,9 @@ class StickmanDesktop:
         self._next_decision = 0.0
         self._next_monitor_scan = time.monotonic() + 1
         self._last_tick = time.monotonic()
+        self._gaze: tuple[float, float] | None = None
+        self._hurt_level = 0
+        self._hurt_cooldown = 0.0
         self._drag_anchor = None
         self._dragging = False
         self._drag_sample = None
@@ -154,6 +158,11 @@ class StickmanDesktop:
                            y=primary.work_rect[1] - self.origin_y + 12, width=38, height=34)
 
     def _sync_surfaces(self) -> None:
+        self.motion.set_bounds([
+            (m.work_rect[0] - self.origin_x, m.work_rect[1] - self.origin_y,
+             m.work_rect[2] - self.origin_x, m.work_rect[3] - self.origin_y)
+            for m in self.monitors
+        ])
         self.motion.set_surfaces(desktop_surfaces(
             self.monitors, self.visible_windows, (self.origin_x, self.origin_y),
             self.ground_offset, self.motion.support_key, self.x,
@@ -206,14 +215,39 @@ class StickmanDesktop:
         left, top, right, bottom = monitor.work_rect
         return left - self.origin_x, top - self.origin_y, right - self.origin_x, bottom - self.origin_y
 
-    def _render(self) -> None:
+    def _update_gaze(self) -> None:
+        try:
+            x, y = cursor_position()
+            self._gaze = (x - self.origin_x, y - self.origin_y)
+        except OSError:
+            self._gaze = None
+
+    def _react_to_impacts(self, now: float) -> None:
+        impacts = self.motion.drain_impacts()
+        for impact in impacts:
+            self.particles.burst(impact.x, impact.y - 3, color=self.color,
+                                 count=min(18, max(3, int(impact.speed / 140))))
+        hard = [impact for impact in impacts if impact.count >= 2 and impact.speed >= 350]
+        if not hard:
+            return
+        count = max(impact.count for impact in hard)
+        level = 2 if count >= 4 else 1
+        if level > self._hurt_level and now >= self._hurt_cooldown:
+            self._hurt_level = level
+            self._hurt_cooldown = now + 1.5
+            text = "Ai! Essa parede é dura!" if level == 1 else "Ai, ai… já chega de quicar!"
+            self.say(text, 3)
+
+    def _render(self, dt: float | None = None) -> None:
         now = time.monotonic()
-        self.actor.render(self.x, self.y, self.direction, self.mode, now, self.motion.vy)
+        self.actor.render(self.x, self.y, self.direction, self.mode, now, self.motion.vy,
+                          gaze=self._gaze, dt=dt, vx=self.motion.vx)
         self.echo.set_visible(self._echo_visible)
         if self._echo_visible:
             left, _top, right, _bottom = self._work_area()
             echo_x = max(left + 40, min(right - 40, self.x + self.direction * 140))
-            self.echo.render(echo_x, self.y, -self.direction, "fight", now + 0.2)
+            self.echo.render(echo_x, self.y, -self.direction, "fight", now + 0.2,
+                             gaze=(self.x, self.y - 75), dt=dt, vx=0)
             if now >= self._next_spark:
                 self._next_spark = now + 0.13
                 self.particles.burst((self.x + echo_x) / 2, self.y - 48, count=5)
@@ -472,6 +506,9 @@ class StickmanDesktop:
                              self.y - (event.y_root - self.origin_y), event.x_root, event.y_root)
         self._drag_sample = (time.monotonic(), self.x, self.y)
         self._drag_velocity = (0.0, 0.0)
+        self._pointer_velocity = PointerVelocity()
+        self._pointer_velocity.record(self._drag_sample[0], event.x_root, event.y_root)
+        self._hurt_level = 0
         self._dragging = False
         self.canvas.grab_set()
 
@@ -486,12 +523,10 @@ class StickmanDesktop:
         left, top, right, bottom = monitor.work_rect
         x = max(left - self.origin_x + 28, min(right - self.origin_x - 28, x))
         y = max(top - self.origin_y + 104,
-                min(bottom - self.origin_y - self.ground_offset, y))
+                min(bottom - self.origin_y - self.ground_offset - FOOT_CLEARANCE, y))
         now = time.monotonic()
-        if self._drag_sample is not None:
-            previous, px, py = self._drag_sample
-            elapsed = max(0.016, now - previous)
-            self._drag_velocity = ((x - px) / elapsed, (y - py) / elapsed)
+        self._pointer_velocity.record(now, event.x_root, event.y_root)
+        self._drag_velocity = self._pointer_velocity.velocity(now)
         self._drag_sample = (now, x, y)
         self._dragging = True
         self.motion.drag_to(x, y)
@@ -500,9 +535,10 @@ class StickmanDesktop:
         if self._drag_anchor is None:
             return
         if self._dragging:
-            velocity = self._drag_velocity
-            if self._drag_sample is None or time.monotonic() - self._drag_sample[0] > 0.12:
-                velocity = (0.0, 0.0)
+            now = time.monotonic()
+            if _event is not None:
+                self._pointer_velocity.record(now, _event.x_root, _event.y_root)
+            velocity = self._pointer_velocity.velocity(now)
             self.motion.release(*velocity)
         self._drag_anchor = self._drag_sample = None
         self._dragging = False
@@ -732,8 +768,10 @@ class StickmanDesktop:
         self.motion.step(dt)
         if not was_grounded and self.motion.grounded:
             self.particles.burst(self.x, self.y - 2, color=self.color, count=8)
+        self._react_to_impacts(now)
         self.particles.step(dt)
-        self._render()
+        self._update_gaze()
+        self._render(dt)
         self.root.after(16, self._tick)
 
     def close(self) -> None:

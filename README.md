@@ -9,7 +9,8 @@ The project renders an original stick figure over Windows, lets the character in
 ## Demo capabilities
 
 - Transparent, always-on-top Windows overlay.
-- Animated walking, jumping, speech bubbles and visual effects.
+- Smooth articulated walking with foot contact, jumping, speech bubbles and visual effects.
+- Head and eyes gently track the mouse without moving the character.
 - Multiple-monitor overlay, including monitors to the left or above the primary display.
 - Animated leaps onto window edges, walking on them and reacting to moving or disappearing support.
 - Drag-and-release physics, waving, cursor following and visual exploration.
@@ -67,7 +68,8 @@ stickman-desktop
 - `F3`: toggle click-through mode.
 - `F4`: start a short visual story.
 - Menu button: open the command panel while interactive mode is enabled.
-- Drag a stroke of the character with the left mouse button, then release it to let it fall.
+- Drag a stroke of the character with the left mouse button, then release it to throw it.
+- Faster releases produce stronger, damped bounces against desktop edges; repeated strong impacts can trigger a playful complaint.
 - Double-click a stroke of the character to jump.
 - Right-click the character for its action menu. These mouse controls require interactive mode (`F3`).
 
@@ -121,6 +123,16 @@ a greeting pose. Dragging the character gives direct control and interrupts its
 current activity. These movements affect the rendered character; application
 launch and minimization remain separate explicit commands.
 
+The head and eyes follow the pointer even while the character stands still; this
+is separate from the `seguir mouse` command, which makes the body walk. The gait
+uses planted feet, lifted swing steps and consistent joint lengths to reduce
+sliding and abrupt limb changes.
+
+The feet rest at the usable desktop bottom, just above the taskbar. Windows
+already removes the taskbar from the work area, so the default `ground_offset`
+is now `0`. Positive values add an intentional gap. The rounded foot stroke is
+accounted for separately at desktop floors and window edges.
+
 ## Configuration
 
 Copy `config.example.json` to `config.json`, then edit the character and allowlist:
@@ -131,7 +143,7 @@ Copy `config.example.json` to `config.json`, then edit the character and allowli
     "name": "Pixel",
     "color": "#ff7a00",
     "start_x": 120,
-    "ground_offset": 72
+    "ground_offset": 0
   },
   "authorized_apps": {
     "calculadora": ["calc.exe"]
