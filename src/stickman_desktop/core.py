@@ -25,14 +25,27 @@ def parse_command(text: str) -> ParsedCommand:
     command = normalize(text)
     if not command:
         return ParsedCommand("empty")
-    # Keep numeric punctuation before general normalization removes signs and dots.
-    walk = re.match(r"^\s*(\S+)\s+(.*?)\s*$", str(text), re.DOTALL)
-    if walk and normalize(walk.group(1)) == "cena":
-        return ParsedCommand("scene", walk.group(2).strip().lower())
-    if walk and normalize(walk.group(1)) == "andar":
-        return ParsedCommand("walk", walk.group(2).replace(",", "."))
+    # Preserve punctuation in identifiers and numeric coordinates.
+    with_argument = re.match(r"^\s*(\S+)\s+(.*?)\s*$", str(text), re.DOTALL)
+    if with_argument:
+        verb = normalize(with_argument.group(1))
+        argument = with_argument.group(2)
+        if verb == "cena":
+            return ParsedCommand("scene", argument.strip().lower())
+        if verb == "andar":
+            return ParsedCommand("walk", argument.replace(",", "."))
+        if verb == "selecionar" and argument.strip():
+            return ParsedCommand("select_character", argument.strip())
     if command.startswith("andar "):
         return ParsedCommand("walk", command.removeprefix("andar ").strip())
+    if command in {"personagens", "listar personagens"}:
+        return ParsedCommand("characters")
+    if command in {"adicionar personagem", "novo personagem"}:
+        return ParsedCommand("add_character")
+    if command == "remover personagem":
+        return ParsedCommand("remove_character")
+    if command.startswith("aparencia "):
+        return ParsedCommand("appearance", command.removeprefix("aparencia "))
     if command in {"pular", "pule"}:
         return ParsedCommand("jump")
     if command in {"subir na janela", "subir janela", "escalar janela", "pular na janela"}:

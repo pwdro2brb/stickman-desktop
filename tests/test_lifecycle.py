@@ -5,6 +5,7 @@ import pytest
 
 from stickman_desktop import app as module
 from stickman_desktop.app import StickmanDesktop
+from stickman_desktop.characters import DesktopCharacter
 from stickman_desktop.motion import Motion, Surface
 from stickman_desktop.scenes import Scene, SceneCatalog, SceneStep
 from stickman_desktop.windows import MonitorInfo
@@ -25,6 +26,7 @@ def desktop(monkeypatch):
     app.canvas = Mock()
     app.control = Mock()
     app.particles = Mock()
+    app.echo = Mock()
     app.hotkeys = Mock()
     app.hotkeys.poll.return_value = []
     app.tray = Mock(available=True)
@@ -38,11 +40,13 @@ def desktop(monkeypatch):
     app.monitors = [MonitorInfo((0, 0, 1000, 800), (0, 0, 1000, 750), True)]
     app.origin_x = app.origin_y = 0
     app.sw, app.sh, app.ground_offset = 1000, 800, 0
-    app.motion = Motion(1000, 800, 200, 747)
+    app.active_character = DesktopCharacter("pixel", "Pixel", "#ff7a00", Motion(1000, 800, 200, 747), Mock())
+    app.characters = {"pixel": app.active_character}
+    app.character_picker = None
     app.motion.set_surfaces([Surface("floor", 0, 1000, 747, "floor")])
-    app.behavior = "manual"
-    app.pose = None
-    app.pose_until = 0
+    app.active_character.behavior = "manual"
+    app.active_character.pose = None
+    app.active_character.pose_until = 0
     app.story_running = False
     app._story_generation = 0
     app._story_jobs, app._scene_jobs, app._scene_items = set(), set(), set()
@@ -78,7 +82,7 @@ def test_hide_cancels_scene_and_hides_every_app_panel(desktop):
     desktop.hide_overlay()
     assert desktop.hidden
     assert not desktop.story_running and not desktop._story_jobs
-    assert desktop.behavior == "manual"
+    assert desktop.active_character.behavior == "manual"
     assert desktop.command_panel is desktop.windows_panel is None
     panel.destroy.assert_called_once()
     listing.destroy.assert_called_once()
@@ -172,11 +176,11 @@ def test_scene_visual_actions_do_not_interrupt_their_own_story(desktop):
     desktop._run_scene_step(SceneStep(0, "walk", {"fraction": 0.5}))
     assert desktop.motion.target_x == 500
     desktop._run_scene_step(SceneStep(0, "wave", {"duration": 0.3}))
-    assert desktop.pose == "wave"
+    assert desktop.active_character.pose == "wave"
     assert desktop.story_running and desktop._story_generation == generation
     clear = next(callback for delay, callback in desktop.pending.values() if delay == 300)
     clear()
-    assert desktop.pose is None
+    assert desktop.active_character.pose is None
 
 
 def test_reloading_invalid_files_stops_previous_scene_and_keeps_valid_entries(desktop, monkeypatch):
@@ -206,6 +210,74 @@ def test_story_shortcut_restores_even_with_an_empty_scene_catalog(desktop):
     assert not desktop.hidden
     desktop.root.deiconify.assert_called_once()
     assert not desktop.story_running
+
+
+def test_companion_following_survives_selection_and_keeps_its_own_target(desktop, monkeypatch):
+    desktop._make_renderer = Mock(return_value=Mock())
+    pixel = desktop.active_character
+    desktop.add_character()
+    companion = desktop.active_character
+    assert companion.id == "faisca"
+    assert companion.motion is not pixel.motion
+    assert abs(companion.motion.x - pixel.motion.x) >= 100
+
+    desktop.follow_mouse()
+    desktop.select_character("pixel")
+    desktop.walk_to(450)
+    monkeypatch.setattr(module, "cursor_position", lambda: (850, 400))
+    desktop._update_behavior(1, companion)
+
+    assert companion.motion.target_x == 850
+    assert pixel.motion.target_x == 450
+    assert companion.behavior == "follow"
+    assert pixel.behavior == "manual"
+
+
+def test_switching_cast_cancels_the_scene_before_it_can_target_the_new_actor(desktop):
+    desktop._make_renderer = Mock(return_value=Mock())
+    pixel = desktop.active_character
+    desktop.start_story()
+    old_callback = next(callback for delay, callback in desktop.pending.values() if delay == 0)
+    desktop.add_character()
+    desktop.say.reset_mock()
+    old_callback()
+
+    assert desktop.active_character is not pixel
+    assert not desktop.story_running and not desktop._story_jobs
+    desktop.say.assert_not_called()
+
+
+def test_appearance_failure_leaves_the_old_renderer_and_motion_intact(desktop):
+    character = desktop.active_character
+    old_renderer = character.renderer
+    motion = character.motion
+    motion.walk_to(600)
+    desktop._make_renderer = Mock(side_effect=ValueError("bad sprite pack"))
+
+    desktop.set_appearance("circuito")
+
+    assert character.appearance == "strokes"
+    assert character.renderer is old_renderer and character.motion is motion
+    assert motion.target_x == 600
+    old_renderer.close.assert_not_called()
+
+
+def test_hiding_stops_all_companions_and_removing_one_keeps_pixel(desktop):
+    renderer = Mock()
+    desktop._make_renderer = Mock(return_value=renderer)
+    desktop.explore()
+    desktop.add_character()
+    companion = desktop.active_character
+    desktop.follow_mouse()
+    desktop.hide_overlay()
+
+    assert all(c.behavior == "manual" and c.motion.target_x is None
+               for c in desktop.characters.values())
+    desktop.remove_character()
+    assert list(desktop.characters) == ["pixel"]
+    assert desktop.active_character.id == "pixel"
+    renderer.close.assert_called_once()
+    assert companion.id not in desktop.characters
 
 
 @pytest.mark.parametrize("command,method", [

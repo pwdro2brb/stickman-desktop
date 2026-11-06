@@ -5,6 +5,7 @@ import pytest
 
 from stickman_desktop import app as app_module
 from stickman_desktop.app import StickmanDesktop
+from stickman_desktop.characters import DesktopCharacter
 from stickman_desktop.motion import Motion
 from stickman_desktop.windows import MonitorInfo, WindowInfo
 
@@ -21,22 +22,23 @@ def desktop():
     desktop.origin_x = desktop.origin_y = 0
     desktop.sw, desktop.sh = 1200, 900
     desktop.ground_offset = 0
-    desktop.motion = Motion(1200, 900, 200, 847)
-    desktop.color = "#ff7a00"
+    desktop.active_character = DesktopCharacter("pixel", "Pixel", "#ff7a00", Motion(1200, 900, 200, 847), Mock())
+    desktop.characters = {"pixel": desktop.active_character}
+    desktop.character_picker = None
     desktop._gaze = None
-    desktop._hurt_level = 0
-    desktop._hurt_cooldown = 0
+    desktop.active_character.hurt_level = 0
+    desktop.active_character.hurt_cooldown = 0
     desktop.visible_windows = []
     desktop.last_external_window = None
-    desktop.behavior = "manual"
-    desktop.pose = None
-    desktop.pose_until = 0
+    desktop.active_character.behavior = "manual"
+    desktop.active_character.pose = None
+    desktop.active_character.pose_until = 0
     desktop.story_running = False
     desktop._story_jobs = set()
     desktop._scene_jobs = set()
     desktop._scene_items = set()
     desktop._echo_visible = False
-    desktop._next_decision = 0
+    desktop.active_character.next_decision = 0
     desktop._next_monitor_scan = 0
     desktop.command_open = False
     desktop.hidden = False
@@ -75,7 +77,7 @@ def test_climb_targets_external_window_and_lands_on_its_edge(desktop):
     desktop._refresh_windows.assert_called_once_with()
     assert desktop.motion.support_key == "window:100"
     assert (desktop.x, desktop.y) == pytest.approx((450, 197))
-    assert desktop.behavior == "manual"
+    assert desktop.active_character.behavior == "manual"
 
 
 def test_climb_refuses_an_edge_without_headroom_and_keeps_existing_floor(desktop):
@@ -106,7 +108,7 @@ def test_follow_converts_global_cursor_x_into_canvas_coordinates(desktop, monkey
     desktop._update_behavior(1)
 
     assert desktop.motion.target_x == 800
-    assert desktop.behavior == "follow"
+    assert desktop.active_character.behavior == "follow"
 
 
 def test_cursor_failure_keeps_follow_mode_available_without_moving(desktop, monkeypatch):
@@ -116,8 +118,8 @@ def test_cursor_failure_keeps_follow_mode_available_without_moving(desktop, monk
     desktop._update_behavior(1)
 
     assert desktop.motion.target_x is None
-    assert desktop.behavior == "follow"
-    assert desktop._next_decision == pytest.approx(1.1)
+    assert desktop.active_character.behavior == "follow"
+    assert desktop.active_character.next_decision == pytest.approx(1.1)
 
 
 def test_exploration_only_leaps_to_current_eligible_window_surfaces(desktop, monkeypatch):
@@ -137,13 +139,13 @@ def test_exploration_only_leaps_to_current_eligible_window_surfaces(desktop, mon
 
     assert [surface.key for surface in choose.call_args.args[0]] == ["window:200"]
     assert desktop.motion.support_key == "window:200"
-    assert desktop.behavior == "explore"
+    assert desktop.active_character.behavior == "explore"
 
 
 def test_stop_cancels_story_scene_callbacks_and_visual_items(desktop):
-    desktop.behavior = "follow"
+    desktop.active_character.behavior = "follow"
     desktop.story_running = True
-    desktop.pose = "fight"
+    desktop.active_character.pose = "fight"
     desktop._echo_visible = True
     desktop._story_jobs = {"story-1", "story-2"}
     desktop._scene_jobs = {"scene-1"}
@@ -152,8 +154,8 @@ def test_stop_cancels_story_scene_callbacks_and_visual_items(desktop):
 
     desktop.stop()
 
-    assert desktop.behavior == "manual"
-    assert desktop.pose is None
+    assert desktop.active_character.behavior == "manual"
+    assert desktop.active_character.pose is None
     assert desktop.story_running is False
     assert desktop._echo_visible is False
     assert desktop._story_jobs == desktop._scene_jobs == desktop._scene_items == set()
@@ -181,22 +183,22 @@ def test_story_callback_cannot_restart_an_action_after_stop(desktop):
 
 def test_manual_walk_uses_global_x_and_interrupts_following(desktop):
     desktop.origin_x = -1000
-    desktop.behavior = "follow"
+    desktop.active_character.behavior = "follow"
 
     desktop.walk_to(-200)
 
     assert desktop.motion.target_x == 800
-    assert desktop.behavior == "manual"
+    assert desktop.active_character.behavior == "manual"
 
 
 @pytest.mark.parametrize("coordinate", [float("nan"), float("inf"), -float("inf")])
 def test_manual_walk_rejects_nonfinite_coordinates_before_changing_activity(desktop, coordinate):
-    desktop.behavior = "follow"
+    desktop.active_character.behavior = "follow"
 
     with pytest.raises(ValueError):
         desktop.walk_to(coordinate)
 
-    assert desktop.behavior == "follow"
+    assert desktop.active_character.behavior == "follow"
     assert desktop.motion.target_x is None
 
 
@@ -293,7 +295,7 @@ def test_topology_change_cancels_effects_and_story_jobs_using_old_coordinates(de
     monkeypatch.setattr(app_module, "position_overlay", Mock())
     monkeypatch.setattr(app_module.time, "monotonic", lambda: 10)
     desktop.story_running = True
-    desktop.pose = "fight"
+    desktop.active_character.pose = "fight"
     desktop._story_jobs = {"old-story"}
     desktop._scene_jobs = {"old-portal"}
     desktop._scene_items = {41}
@@ -302,7 +304,7 @@ def test_topology_change_cancels_effects_and_story_jobs_using_old_coordinates(de
     desktop._refresh_desktop()
 
     assert desktop.story_running is False
-    assert desktop.pose is None
+    assert desktop.active_character.pose is None
     assert desktop._story_jobs == desktop._scene_jobs == desktop._scene_items == set()
     desktop.canvas.delete.assert_called_once_with(41)
     desktop.particles.clear.assert_called_once_with()
@@ -318,7 +320,7 @@ def test_gaze_tracks_global_cursor_without_starting_follow_mode(desktop, monkeyp
 
     assert desktop._gaze == (700, 150)
     assert (desktop.x, desktop.y, desktop.motion.target_x) == before
-    assert desktop.behavior == "manual"
+    assert desktop.active_character.behavior == "manual"
 
 
 def test_cursor_read_failure_returns_gaze_to_neutral(desktop, monkeypatch):
@@ -369,7 +371,7 @@ def test_repeated_hard_bounces_react_with_cooldown_and_no_bubble_spam(desktop):
     desktop._react_to_impacts(3)
     assert "já chega" in desktop.say.call_args.args[0]
     assert desktop.say.call_count == 2
-    assert desktop._hurt_level == 2
+    assert desktop.active_character.hurt_level == 2
 
 
 def test_weak_bounces_do_not_produce_hurt_reaction(desktop):

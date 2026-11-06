@@ -25,10 +25,10 @@
 - [x] Velocity-based throws, damped bounces and impact reactions
 - [x] Correct foot contact with the taskbar and window edges
 
-- [ ] Replace procedural limbs with an animation state machine
-- [ ] Load original sprite packs
+- [x] Drive procedural and sprite renderers with per-character animation states
+- [x] Load original sprite packs (Circuito PNG and manifest)
 - [x] Configurable scenes in JSON (validated visual actions, selection and live reload)
-- [ ] Multiple characters
+- [x] Multiple characters (independent movement and commands for the selected character)
 - [x] Particle pooling and effect cleanup (bounded reusable Canvas items and explicit shutdown)
 
 ## 0.5 - Accessibility perception

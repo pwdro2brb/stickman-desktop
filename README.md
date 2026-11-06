@@ -11,7 +11,9 @@ The project renders an original stick figure over Windows, lets the character in
 - Transparent, always-on-top Windows overlay.
 - Native Windows tray icon with restore, hide, actions and exit controls.
 - Smooth articulated walking with foot contact, jumping, speech bubbles and visual effects.
-- Head and eyes gently track the mouse without moving the character.
+- Up to four independently animated characters with a selectable command target.
+- Two appearances, articulated **Traços** and the original **Circuito** sprite pack.
+- In **Traços**, the head and eyes gently track the mouse without moving the character.
 - Multiple-monitor overlay, including monitors to the left or above the primary display.
 - Animated leaps onto window edges, walking on them and reacting to moving or disappearing support.
 - Drag-and-release physics, waving, cursor following and visual exploration.
@@ -71,10 +73,9 @@ stickman-desktop
 - `F4`: start the selected visual scene.
 - Tray icon: double-click to restore the character in interactive mode; right-click for actions.
 - Menu button: open the command panel while interactive mode is enabled.
-- Drag a stroke of the character with the left mouse button, then release it to throw it.
+- Drag a character with the left mouse button, then release it to throw it.
 - Faster releases produce stronger, damped bounces against desktop edges; repeated strong impacts can trigger a playful complaint.
-- Double-click a stroke of the character to jump.
-- Right-click the character for its action menu. These mouse controls require interactive mode (`F3`).
+- Click a character to select it, double-click it to jump, or right-click it to open its action menu. These mouse controls require interactive mode (`F3`).
 
 ## Commands
 
@@ -88,6 +89,12 @@ explorar
 seguir mouse
 parar
 acenar
+personagens
+adicionar personagem
+selecionar Faísca
+aparência circuito
+aparência traços
+remover personagem
 olhar tela
 listar janelas
 minimizar janela
@@ -127,20 +134,44 @@ a maximized or very high window down before trying to climb it.
 
 `explorar` starts a visual walk with occasional leaps onto eligible windows.
 `seguir mouse` follows the cursor horizontally without clicking applications.
-`parar` stops exploration, cursor following and the current story; `acenar` plays
-a greeting pose. Dragging the character gives direct control and interrupts its
-current activity. These movements affect the rendered character; application
-launch and minimization remain separate explicit commands.
+`parar` stops exploration, cursor following and the current story for the
+selected character. `acenar` plays a greeting pose. Dragging a character gives
+direct control and interrupts its current activity. Application launch and
+minimization remain separate explicit commands.
 
-The head and eyes follow the pointer even while the character stands still; this
-is separate from the `seguir mouse` command, which makes the body walk. The gait
-uses planted feet, lifted swing steps and consistent joint lengths to reduce
-sliding and abrupt limb changes.
+In **Traços**, the head and eyes follow the pointer even while the character
+stands still. `seguir mouse` makes the body walk. The gait uses planted feet,
+lifted swing steps and consistent joint lengths to reduce sliding and abrupt
+limb changes.
 
 The feet rest at the usable desktop bottom, just above the taskbar. Windows
 already removes the taskbar from the work area, so the default `ground_offset`
 is now `0`. Positive values add an intentional gap. The rounded foot stroke is
 accounted for separately at desktop floors and window edges.
+
+## Characters and appearance
+
+Press `F2` and use **Personagem e aparência** to select a character, change its
+appearance, or use **Adicionar** and **Remover**. The roster starts with the
+character from `config.json` (Pixel by default). You can add Faísca, Íris and
+Nimbo for a total of four. Faísca starts with **Circuito**. The other characters
+start with **Traços**.
+
+`personagens` opens the roster, and `adicionar personagem` adds the next available
+companion. `selecionar <nome ou id>` accepts a display name or a stable ID such as
+`pixel`, `faisca`, `iris` or `nimbo`. `remover personagem` removes the selected
+companion. The initial character stays available throughout the session.
+
+Each character has independent movement, exploration, cursor following and poses.
+Select a different character to give it a command while the others continue
+moving. A scene plays with the selected character, and changing selection during
+that scene cancels it. Hiding the overlay stops activities and pauses all
+characters.
+
+**Circuito** uses an original PNG sheet with frames for idle, walking, jumping,
+falling, dragging, waving and fighting. The manifest and image ship in
+`src/stickman_desktop/assets/sprites/circuito/`. **Traços** provides the articulated
+gait and live gaze. **Circuito** uses the eyes painted into each sprite frame.
 
 ## Tray and visibility
 
@@ -150,19 +181,20 @@ The right-click menu also offers show/hide, **Comandos (F2)**, **Janelas visíve
 **Explorar**, **História**, **Parar**, click-through controls (**F3**) and **Sair**.
 Windows may place the icon in the notification area's overflow menu.
 
-Use `ocultar` to hide the character. Hiding stops exploration, following and scenes,
-clears visual effects and pauses movement/rendering. The tray and global shortcuts
-remain available: `F2` restores and opens commands, `F3` restores interactive mode,
-and `F4` restores and starts the selected scene. Use `restaurar` or the tray menu
-for a direct restore. If the tray is unavailable, hiding is refused so the
-character remains reachable.
+Use `ocultar` to hide the overlay. Hiding stops exploration, following and scenes,
+clears visual effects and pauses movement and rendering for all characters. The
+tray and global shortcuts remain available. `F2` restores and opens commands,
+`F3` restores interactive mode, and `F4` restores and starts the selected scene.
+Use `restaurar` or the tray menu for a direct restore. If the tray is unavailable,
+the overlay stays visible so the characters remain reachable.
 
 ## JSON scenes
 
 Press `F2` and choose a **Cena visual**, then **Iniciar**. **Recarregar** (or
 `recarregar cenas`) reloads scene files without restarting the app. The `cenas`
 command opens the selector; `cena <id>` starts a particular scene, and `F4` uses
-the current selection. Two original scenes are included:
+the current scene selection. The selected character performs the scene. Two
+original scenes are included.
 
 | ID | Name |
 | --- | --- |
@@ -241,14 +273,18 @@ stickman-desktop/
 │   └── ROADMAP.md
 ├── src/stickman_desktop/
 │   ├── animation.py
+│   ├── animation_state.py
 │   ├── app.py
 │   ├── assets/scenes/
+│   ├── assets/sprites/
+│   ├── characters.py
 │   ├── config.py
 │   ├── core.py
 │   ├── environment.py
 │   ├── gestures.py
 │   ├── motion.py
 │   ├── scenes.py
+│   ├── sprites.py
 │   ├── tray.py
 │   └── windows.py
 ├── tests/
@@ -267,12 +303,12 @@ stickman-desktop/
 - Window platforms use metadata; a partly covered window can still provide a surface.
 - Perception is limited to window metadata, not buttons or screen content.
 - Stories are scripted rather than generated dynamically.
-- The character uses procedural lines, not sprite animation.
+- Live eye and head tracking is available in **Traços**. **Circuito** uses fixed artwork in its frames.
 - Windows is the only supported operating system.
 
 ## Vision
 
-Future versions may add Windows UI Automation, multiple original characters, extensions for supported applications, and optional local AI planning. See [PROJECT_VISION.md](docs/PROJECT_VISION.md) and [ROADMAP.md](docs/ROADMAP.md).
+Future versions may add Windows UI Automation, extensions for supported applications, and optional local AI planning. See [PROJECT_VISION.md](docs/PROJECT_VISION.md) and [ROADMAP.md](docs/ROADMAP.md).
 
 ## Originality and inspiration
 

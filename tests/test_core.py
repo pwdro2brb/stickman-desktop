@@ -82,3 +82,19 @@ def test_parse_walk_keeps_signed_coordinates_and_invalid_arguments(command, argu
 
 def test_normalize_keeps_its_general_punctuation_rules():
     assert normalize("Andar -500,25!") == "andar 500 25"
+
+
+@pytest.mark.parametrize("command, action, argument", [
+    ("Personagens", "characters", ""),
+    ("listar personagens!", "characters", ""),
+    ("adicionar personagem", "add_character", ""),
+    ("novo personagem", "add_character", ""),
+    ("remover personagem", "remove_character", ""),
+    ("SELECIONAR Faísca", "select_character", "Faísca"),
+    ("selecionar meu-personagem", "select_character", "meu-personagem"),
+    ("aparência Traços!", "appearance", "tracos"),
+    ("aparência Circuito", "appearance", "circuito"),
+])
+def test_parse_roster_controls(command, action, argument):
+    parsed = parse_command(command)
+    assert (parsed.action, parsed.argument) == (action, argument)

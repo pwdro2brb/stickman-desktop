@@ -9,12 +9,14 @@ from pathlib import Path
 from tkinter import ttk
 
 from .animation import CharacterRenderer, Particles
+from .characters import COMPANIONS, DesktopCharacter, find_character, spawn_x
 from .config import load_config
 from .environment import FOOT_CLEARANCE, desktop_surfaces, nearest_monitor, virtual_bounds
 from .gestures import PointerVelocity
 from .motion import Motion
 from .core import parse_command
 from .scenes import BUILTIN_SCENES_DIR, SceneStep, load_scenes
+from .sprites import SpritePack, SpriteRenderer
 from .tray import TrayIcon
 from .windows import (
     GlobalHotkeys,
@@ -62,13 +64,23 @@ class StickmanDesktop:
                                 highlightthickness=0, bd=0)
         self.canvas.pack(fill="both", expand=True)
 
-        self.name = character.get("name", "Pixel")
-        self.color = character.get("color", "#ff7a00")
+        name = character.get("name", "Pixel")
+        color = character.get("color", "#ff7a00")
         self.ground_offset = max(0.0, float(character.get("ground_offset", 0)))
         primary = next((m for m in self.monitors if m.primary), self.monitors[0])
         pl, _pt, pr, pb = primary.work_rect
         start_x = max(pl + 28, min(pr - 28, pl + float(character.get("start_x", 120))))
-        self.motion = Motion(self.sw, self.sh, start_x - left, pb - top - self.ground_offset - FOOT_CLEARANCE)
+        motion = Motion(self.sw, self.sh, start_x - left, pb - top - self.ground_offset - FOOT_CLEARANCE)
+        renderer = CharacterRenderer(self.canvas, color, tag="actor:pixel")
+        self.active_character = DesktopCharacter("pixel", name, color, motion, renderer)
+        self.characters = {self.active_character.id: self.active_character}
+        self._sprite_pack: SpritePack | None = None
+        self.character_picker: ttk.Combobox | None = None
+        self.appearance_picker: ttk.Combobox | None = None
+        self.character_prompt: tk.StringVar | None = None
+        self.add_character_button: tk.Button | None = None
+        self.remove_character_button: tk.Button | None = None
+        self._tag_character(self.active_character)
         self.hidden = False
         self._closing = False
         self.tray: TrayIcon | None = None
@@ -82,21 +94,15 @@ class StickmanDesktop:
         self._story_generation = 0
         self.reload_scenes(notify=False)
         self.frame = 0
-        self.behavior = "manual"
-        self.pose: str | None = None
-        self.pose_until = 0.0
         self.story_running = False
         self._story_jobs: set[str] = set()
         self._scene_jobs: set[str] = set()
         self._scene_items: set[int] = set()
         self._echo_visible = False
         self._next_spark = 0.0
-        self._next_decision = 0.0
         self._next_monitor_scan = time.monotonic() + 1
         self._last_tick = time.monotonic()
         self._gaze: tuple[float, float] | None = None
-        self._hurt_level = 0
-        self._hurt_cooldown = 0.0
         self._drag_anchor = None
         self._dragging = False
         self._drag_sample = None
@@ -113,15 +119,18 @@ class StickmanDesktop:
         self.windows_status: tk.StringVar | None = None
 
         self._sync_surfaces()
-        self._draw_character()
+        self._draw_effects()
         self._draw_control()
         self.root.update_idletasks()
         position_overlay(int(self.root.winfo_id()), virtual_bounds(self.monitors))
-        self.canvas.tag_bind("character", "<ButtonPress-1>", self._begin_drag)
+        self.canvas.tag_bind("desktop_character", "<ButtonPress-1>",
+                             lambda event: self._actor_event(event, self._begin_drag))
         self.canvas.bind("<B1-Motion>", self._drag)
         self.canvas.bind("<ButtonRelease-1>", self._end_drag)
-        self.canvas.tag_bind("character", "<Double-Button-1>", self._double_click)
-        self.canvas.tag_bind("character", "<Button-3>", self._character_menu)
+        self.canvas.tag_bind("desktop_character", "<Double-Button-1>",
+                             lambda event: self._actor_event(event, self._double_click))
+        self.canvas.tag_bind("desktop_character", "<Button-3>",
+                             lambda event: self._actor_event(event, self._character_menu))
         self.hotkeys = GlobalHotkeys()
         self.hotkeys.register()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
@@ -162,6 +171,10 @@ class StickmanDesktop:
         self._place_control()
 
     @property
+    def motion(self) -> Motion:
+        return self.active_character.motion
+
+    @property
     def x(self) -> float:
         return self.motion.x
 
@@ -173,27 +186,20 @@ class StickmanDesktop:
     def direction(self) -> int:
         return self.motion.direction
 
-    @property
-    def mode(self) -> str:
-        if self.pose and time.monotonic() < self.pose_until:
-            return self.pose
-        return self.motion.mode
-
     def _place_control(self) -> None:
         primary = next((m for m in self.monitors if m.primary), self.monitors[0])
         self.control.place(x=primary.work_rect[0] - self.origin_x + 12,
                            y=primary.work_rect[1] - self.origin_y + 12, width=38, height=34)
 
     def _sync_surfaces(self) -> None:
-        self.motion.set_bounds([
+        bounds = [
             (m.work_rect[0] - self.origin_x, m.work_rect[1] - self.origin_y,
              m.work_rect[2] - self.origin_x, m.work_rect[3] - self.origin_y)
             for m in self.monitors
-        ])
-        self.motion.set_surfaces(desktop_surfaces(
-            self.monitors, self.visible_windows, (self.origin_x, self.origin_y),
-            self.ground_offset, self.motion.support_key, self.x,
-        ))
+        ]
+        for character in self.characters.values():
+            character.motion.set_bounds(bounds)
+            character.motion.set_surfaces(self._playground(character))
 
     def _refresh_desktop(self) -> None:
         now = time.monotonic()
@@ -212,11 +218,12 @@ class StickmanDesktop:
             self._end_drag()
         was_story = self.story_running
         self._cancel_story()
-        self.pose = None
+        self.active_character.pose = None
         if was_story:
             self.motion.stop()
-        self.motion.reframe(right - left, bottom - top,
-                            self.origin_x - left, self.origin_y - top)
+        for character in self.characters.values():
+            character.motion.reframe(right - left, bottom - top,
+                                     self.origin_x - left, self.origin_y - top)
         self.monitors = monitors
         self.origin_x, self.origin_y = left, top
         self.sw, self.sh = right - left, bottom - top
@@ -225,8 +232,7 @@ class StickmanDesktop:
             self._place_control()
         self._sync_surfaces()
 
-    def _draw_character(self) -> None:
-        self.actor = CharacterRenderer(self.canvas, self.color)
+    def _draw_effects(self) -> None:
         self.echo = CharacterRenderer(self.canvas, "#8970ff", tag="echo")
         self.echo.set_visible(False)
         self.particles = Particles(self.canvas)
@@ -236,8 +242,9 @@ class StickmanDesktop:
                                                    font=("Segoe UI", 11), width=326,
                                                    anchor="nw", state="hidden")
 
-    def _work_area(self) -> tuple[float, float, float, float]:
-        monitor = nearest_monitor(self.monitors, self.x + self.origin_x, self.y + self.origin_y)
+    def _work_area(self, character: DesktopCharacter | None = None) -> tuple[float, float, float, float]:
+        motion = character.motion if character is not None else self.motion
+        monitor = nearest_monitor(self.monitors, motion.x + self.origin_x, motion.y + self.origin_y)
         left, top, right, bottom = monitor.work_rect
         return left - self.origin_x, top - self.origin_y, right - self.origin_x, bottom - self.origin_y
 
@@ -248,28 +255,43 @@ class StickmanDesktop:
         except OSError:
             self._gaze = None
 
-    def _react_to_impacts(self, now: float) -> None:
-        impacts = self.motion.drain_impacts()
+    def _react_to_impacts(self, now: float, character: DesktopCharacter | None = None) -> None:
+        character = character or self.active_character
+        impacts = character.motion.drain_impacts()
         for impact in impacts:
-            self.particles.burst(impact.x, impact.y - 3, color=self.color,
+            self.particles.burst(impact.x, impact.y - 3, color=character.color,
                                  count=min(18, max(3, int(impact.speed / 140))))
+        if character is not self.active_character:
+            return
         hard = [impact for impact in impacts if impact.count >= 2 and impact.speed >= 350]
         if not hard:
             return
         count = max(impact.count for impact in hard)
         level = 2 if count >= 4 else 1
-        if level > self._hurt_level and now >= self._hurt_cooldown:
-            self._hurt_level = level
-            self._hurt_cooldown = now + 1.5
+        if level > character.hurt_level and now >= character.hurt_cooldown:
+            character.hurt_level = level
+            character.hurt_cooldown = now + 1.5
             text = "Ai! Essa parede é dura!" if level == 1 else "Ai, ai… já chega de quicar!"
             self.say(text, 3)
 
-    def _render(self, dt: float | None = None) -> None:
+    def _render_character(self, character: DesktopCharacter, now: float, dt: float) -> str:
+        motion = character.motion
+        frame = character.animation.update(motion.mode, now, dt, pose=character.pose,
+                                           pose_until=character.pose_until)
+        character.renderer.render(motion.x, motion.y, motion.direction, frame.mode, now, motion.vy,
+                                  gaze=self._gaze, dt=dt, vx=motion.vx, state_elapsed=frame.elapsed)
+        return frame.mode
+
+    def _render(self, dt: float = 0) -> None:
         now = time.monotonic()
-        self.actor.render(self.x, self.y, self.direction, self.mode, now, self.motion.vy,
-                          gaze=self._gaze, dt=dt, vx=self.motion.vx)
-        self.echo.set_visible(self._echo_visible)
-        if self._echo_visible:
+        active_mode = "idle"
+        for character in self.characters.values():
+            mode = self._render_character(character, now, dt)
+            if character is self.active_character:
+                active_mode = mode
+        echo_visible = self._echo_visible and active_mode == "fight"
+        self.echo.set_visible(echo_visible)
+        if echo_visible:
             left, _top, right, _bottom = self._work_area()
             echo_x = max(left + 40, min(right - 40, self.x + self.direction * 140))
             self.echo.render(echo_x, self.y, -self.direction, "fight", now + 0.2,
@@ -429,7 +451,10 @@ class StickmanDesktop:
             self.say("A bandeja está indisponível; vou permanecer visível para você me encontrar.", 5)
             return
         self._take_control()
-        self.motion.stop()
+        for character in self.characters.values():
+            character.behavior = "manual"
+            character.pose = None
+            character.motion.stop()
         if self.command_panel is not None:
             self._close_panel(self.command_panel)
         self._close_window_list()
@@ -449,16 +474,20 @@ class StickmanDesktop:
         self._place_control()
         self.root.lift()
         # Recover a character left outside the work areas by a display change.
-        gx, gy = self.x + self.origin_x, self.y + self.origin_y
-        visible = any(m.work_rect[0] + 28 <= gx <= m.work_rect[2] - 28
-                      and m.work_rect[1] + 100 <= gy <= m.work_rect[3] for m in self.monitors)
-        if not visible:
-            primary = next((m for m in self.monitors if m.primary), self.monitors[0])
-            left, _top, right, bottom = primary.work_rect
-            self.motion.drag_to((left + right) / 2 - self.origin_x,
-                                bottom - self.origin_y - self.ground_offset - FOOT_CLEARANCE)
-            self.motion.release()
-            self.motion.step(0.01)
+        for character in self.characters.values():
+            motion = character.motion
+            gx, gy = motion.x + self.origin_x, motion.y + self.origin_y
+            visible = any(m.work_rect[0] + 28 <= gx <= m.work_rect[2] - 28
+                          and m.work_rect[1] + 100 <= gy <= m.work_rect[3] for m in self.monitors)
+            if not visible:
+                primary = next((m for m in self.monitors if m.primary), self.monitors[0])
+                left, _top, right, bottom = primary.work_rect
+                occupied = [other.motion.x for other in self.characters.values() if other is not character]
+                x = spawn_x(left - self.origin_x + 28, right - self.origin_x - 28,
+                            (left + right) / 2 - self.origin_x, occupied)
+                motion.drag_to(x, bottom - self.origin_y - self.ground_offset - FOOT_CLEARANCE)
+                motion.release()
+                motion.step(0.01)
         self._last_tick = time.monotonic()
         self._update_tray()
         self._update_gaze()
@@ -509,8 +538,8 @@ class StickmanDesktop:
 
     def _take_control(self) -> None:
         self._end_drag()
-        self.behavior = "manual"
-        self.pose = None
+        self.active_character.behavior = "manual"
+        self.active_character.pose = None
         self._cancel_story()
 
     def walk_to(self, x: float) -> None:
@@ -549,58 +578,177 @@ class StickmanDesktop:
     def wave(self) -> None:
         self._take_control()
         self.motion.stop()
-        self.pose, self.pose_until = "wave", time.monotonic() + 2.8
+        self.active_character.pose, self.active_character.pose_until = "wave", time.monotonic() + 2.8
         self.say("Oi! Vamos explorar esse desktop?", 3)
 
     def explore(self) -> None:
         self._take_control()
         self.motion.stop()
-        self.behavior, self._next_decision = "explore", 0
+        self.active_character.behavior, self.active_character.next_decision = "explore", 0
         self.say("Vou passear pelas bordas das janelas. Diga parar quando quiser.", 5)
 
     def follow_mouse(self) -> None:
         self._take_control()
         self.motion.stop()
-        self.behavior, self._next_decision = "follow", 0
+        self.active_character.behavior, self.active_character.next_decision = "follow", 0
         self.say("Vou acompanhar seu cursor. Diga parar para descansar.", 4)
 
-    def _update_behavior(self, now: float) -> None:
-        if self.behavior == "manual" or self.command_open or self._drag_anchor is not None:
+    def _update_behavior(self, now: float, character: DesktopCharacter | None = None) -> None:
+        character = character or self.active_character
+        motion = character.motion
+        if character.behavior == "manual":
             return
-        if now < self._next_decision:
+        if character is self.active_character and (self.command_open or self._drag_anchor is not None):
             return
-        if self.behavior == "follow":
-            self._next_decision = now + 0.1
+        if now < character.next_decision:
+            return
+        if character.behavior == "follow":
+            character.next_decision = now + 0.1
             try:
                 x, _y = cursor_position()
             except OSError:
                 return
-            if abs(x - self.origin_x - self.x) > 55:
-                self.motion.walk_to(x - self.origin_x)
+            if abs(x - self.origin_x - motion.x) > 55:
+                motion.walk_to(x - self.origin_x)
             else:
-                self.motion.stop()
+                motion.stop()
             return
-        self._next_decision = now + random.uniform(3, 5)
-        if not self.motion.grounded:
-            self._next_decision = now + 0.5
+        character.next_decision = now + random.uniform(3, 5)
+        if not motion.grounded:
+            character.next_decision = now + 0.5
             return
-        options = [surface for surface in self._playground()
-                   if surface.kind == "window" and surface.key != self.motion.support_key]
+        options = [surface for surface in self._playground(character)
+                   if surface.kind == "window" and surface.key != motion.support_key]
         if options and random.random() < 0.6:
-            self.motion.leap_to(random.choice(options).key)
-        elif self.motion.support is not None:
-            support = self.motion.support
+            motion.leap_to(random.choice(options).key)
+        elif motion.support is not None:
+            support = motion.support
             if support.kind == "window" and random.random() < 0.2:
-                self.motion.drop()
+                motion.drop()
             else:
-                self.motion.walk_to(random.uniform(support.left + 28, support.right - 28))
+                motion.walk_to(random.uniform(support.left + 28, support.right - 28))
                 if random.random() < 0.25:
-                    self.motion.jump()
+                    motion.jump()
 
-    def _playground(self):
+    def _playground(self, character: DesktopCharacter | None = None):
+        motion = character.motion if character is not None else self.motion
         return desktop_surfaces(self.monitors, self.visible_windows,
                                 (self.origin_x, self.origin_y), self.ground_offset,
-                                self.motion.support_key, self.x)
+                                motion.support_key, motion.x)
+
+    def _tag_character(self, character: DesktopCharacter) -> None:
+        self.canvas.addtag_withtag("desktop_character", character.tag)
+
+    def _actor_event(self, event, handler):
+        for tag in self.canvas.gettags("current"):
+            if tag.startswith("actor:"):
+                if self.select_character(tag.removeprefix("actor:"), announce=False):
+                    return handler(event)
+                break
+        return None
+
+    def _make_renderer(self, character_id: str, color: str, appearance: str):
+        tag = f"actor:{character_id}"
+        if appearance == "circuito":
+            if self._sprite_pack is None:
+                self._sprite_pack = SpritePack.load(self.root)
+            return SpriteRenderer(self.canvas, self._sprite_pack, tag=tag)
+        return CharacterRenderer(self.canvas, color, tag=tag)
+
+    def add_character(self) -> None:
+        spec = next((item for item in COMPANIONS if item.id not in self.characters), None)
+        if spec is None:
+            self.say("Todos os quatro personagens já estão no desktop.", 4)
+            return
+        left, top, right, bottom = self._work_area()
+        occupied = [item.motion.x for item in self.characters.values()
+                    if top <= item.motion.y <= bottom]
+        x = spawn_x(left + 28, right - 28, self.x, occupied)
+        y = max(top + 104, bottom - self.ground_offset - FOOT_CLEARANCE)
+        motion = Motion(self.sw, self.sh, x, y)
+        appearance = spec.appearance
+        try:
+            renderer = self._make_renderer(spec.id, spec.color, appearance)
+        except ValueError:
+            appearance = "strokes"
+            renderer = self._make_renderer(spec.id, spec.color, appearance)
+        character = DesktopCharacter(spec.id, spec.name, spec.color, motion, renderer, appearance)
+        self.characters[character.id] = character
+        self._tag_character(character)
+        self._sync_surfaces()
+        self.select_character(character.id, announce=False)
+        self.say(f"{character.name} entrou no desktop.", 4)
+
+    def select_character(self, query: str, announce: bool = True) -> bool:
+        character = find_character(self.characters, query)
+        if character is None:
+            self.say("Personagem não encontrado. Use personagens para ver o elenco.", 5)
+            return False
+        if character is self.active_character:
+            return True
+        self._end_drag()
+        if self.story_running or self._scene_jobs:
+            self.active_character.pose = None
+            self.motion.stop()
+            self._cancel_story()
+        self.active_character = character
+        self.bubble_until = 0
+        self._update_character_picker()
+        if announce:
+            self.say(f"{character.name} está selecionado.", 3)
+        return True
+
+    def remove_character(self) -> None:
+        character = self.active_character
+        if character.id == "pixel":
+            self.say("Selecione um companheiro para removê-lo.", 4)
+            return
+        self.select_character("pixel", announce=False)
+        del self.characters[character.id]
+        character.renderer.close()
+        self._update_character_picker()
+        self.say(f"{character.name} saiu do desktop.", 4)
+
+    def set_appearance(self, name: str) -> None:
+        appearance = {"tracos": "strokes", "circuito": "circuito"}.get(name)
+        if appearance is None:
+            self.say("Escolha aparência traços ou aparência circuito.", 4)
+            return
+        character = self.active_character
+        if character.appearance == appearance:
+            return
+        try:
+            renderer = self._make_renderer(character.id, character.color, appearance)
+        except ValueError:
+            self._update_character_picker()
+            self.say("O pacote Circuito não pôde ser carregado.", 5)
+            return
+        character.renderer.close()
+        character.renderer, character.appearance = renderer, appearance
+        self._tag_character(character)
+        self._update_character_picker()
+        self._render_character(character, time.monotonic(), 0)
+
+    def _update_character_picker(self) -> None:
+        if self.character_picker is None:
+            return
+        characters = list(self.characters.values())
+        self.character_picker.configure(values=[character.name for character in characters])
+        self.character_picker.current(characters.index(self.active_character))
+        self.appearance_picker.current(1 if self.active_character.appearance == "circuito" else 0)
+        self.character_prompt.set(f"Diga a {self.active_character.name} o que fazer")
+        self.add_character_button.configure(state="normal" if len(characters) < 1 + len(COMPANIONS) else "disabled")
+        self.remove_character_button.configure(state="normal" if self.active_character.id != "pixel" else "disabled")
+
+    def _select_character_from_panel(self, _event=None) -> None:
+        index = self.character_picker.current()
+        if 0 <= index < len(self.characters):
+            self.select_character(list(self.characters)[index], announce=False)
+
+    def _select_appearance_from_panel(self, _event=None) -> None:
+        index = self.appearance_picker.current()
+        if index in (0, 1):
+            self.set_appearance(("tracos", "circuito")[index])
 
     def _begin_drag(self, event) -> None:
         if self.click_through:
@@ -613,7 +761,7 @@ class StickmanDesktop:
         self._drag_velocity = (0.0, 0.0)
         self._pointer_velocity = PointerVelocity()
         self._pointer_velocity.record(self._drag_sample[0], event.x_root, event.y_root)
-        self._hurt_level = 0
+        self.active_character.hurt_level = 0
         self._dragging = False
         self.canvas.grab_set()
 
@@ -657,6 +805,8 @@ class StickmanDesktop:
     def _character_menu(self, event) -> None:
         self._refresh_windows()
         menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(label=self.active_character.name, state="disabled")
+        menu.add_separator()
         for label, command in [
             ("Pular", self.jump), ("Subir na janela", self.climb_window),
             ("Descer", self.descend), ("Explorar", self.explore),
@@ -751,7 +901,7 @@ class StickmanDesktop:
     def portal(self, manual: bool = True, duration: float = 6) -> None:
         if manual:
             self._take_control()
-        self.pose = None
+        self.active_character.pose = None
         self._echo_visible = False
         left, top, right, bottom = self._work_area()
         center = max(left + 70, min(right - 70, self.x + self.direction * 180))
@@ -858,10 +1008,10 @@ class StickmanDesktop:
 
     def _scene_pose(self, pose: str, duration: float) -> None:
         end = time.monotonic() + duration
-        self.pose, self.pose_until = pose, end
+        self.active_character.pose, self.active_character.pose_until = pose, end
         def finish() -> None:
-            if self.pose == pose and self.pose_until == end:
-                self.pose = None
+            if self.active_character.pose == pose and self.active_character.pose_until == end:
+                self.active_character.pose = None
                 if pose == "fight":
                     self._echo_visible = False
         self._schedule_scene(round(duration * 1000), finish, story=self.story_running)
@@ -875,7 +1025,7 @@ class StickmanDesktop:
 
     def _finish_story(self) -> None:
         self._cancel_story()
-        self.pose = None
+        self.active_character.pose = None
         self.motion.stop()
         self.say("Cena concluída. Até a próxima aventura!", 4)
 
@@ -900,23 +1050,30 @@ class StickmanDesktop:
         elif parsed.action == "story": self.start_story()
         elif parsed.action == "scene": self.start_story(parsed.argument)
         elif parsed.action == "scenes": self.open_command_panel(focus_scene=True)
+        elif parsed.action == "characters": self.open_command_panel(focus_character=True)
+        elif parsed.action == "add_character": self.add_character()
+        elif parsed.action == "select_character": self.select_character(parsed.argument)
+        elif parsed.action == "remove_character": self.remove_character()
+        elif parsed.action == "appearance": self.set_appearance(parsed.argument)
         elif parsed.action == "reload_scenes": self.reload_scenes()
         elif parsed.action == "hide": self.hide_overlay()
         elif parsed.action == "restore": self.restore_overlay()
         elif parsed.action == "portal": self.portal()
         elif parsed.action == "help":
-            self.say("subir na janela | explorar | seguir mouse | parar | cenas | cena echo_duel | recarregar cenas | ocultar | restaurar | listar janelas", 10)
+            self.say("personagens | adicionar personagem | selecionar Faísca | aparência circuito | cenas | explorar | parar | listar janelas", 10)
         elif parsed.action != "empty":
             self.say("Comando desconhecido. Digite ajuda.", 4)
 
-    def open_command_panel(self, focus_scene: bool = False) -> None:
+    def open_command_panel(self, focus_scene: bool = False, *, focus_character: bool = False) -> None:
         if self.hidden:
             self.restore_overlay()
         self._end_drag()
         if self.command_open:
             if self.command_panel is not None:
                 self.command_panel.lift()
-            if focus_scene and self.scene_picker is not None:
+            if focus_character and self.character_picker is not None:
+                self.character_picker.focus_force()
+            elif focus_scene and self.scene_picker is not None:
                 self.scene_picker.focus_force()
             return
         # Capture the external target before the panel takes keyboard focus.
@@ -931,7 +1088,8 @@ class StickmanDesktop:
         panel.update_idletasks()
         self.panel_hwnd = int(panel.winfo_id())
         panel.protocol("WM_DELETE_WINDOW", lambda: self._close_panel(panel))
-        tk.Label(panel, text=f"Diga a {self.name} o que fazer", bg="#171717", fg="white",
+        self.character_prompt = tk.StringVar(panel)
+        tk.Label(panel, textvariable=self.character_prompt, bg="#171717", fg="white",
                  font=("Segoe UI", 16, "bold")).pack(anchor="w", padx=18, pady=(18,6))
         tk.Label(panel, text="Somente ferramentas autorizadas no config.json podem ser executadas.",
                  bg="#171717", fg="#bdbdbd", font=("Segoe UI", 10)).pack(anchor="w", padx=18)
@@ -952,6 +1110,26 @@ class StickmanDesktop:
                                ("Seguir mouse", "seguir mouse"), ("Acenar", "acenar"), ("Parar", "parar")]:
             tk.Button(quick, text=label, command=lambda value=command: quick_run(value),
                       bg="#292929", fg="white", bd=0, padx=10, pady=6).pack(side="left", padx=(0, 6))
+        character_frame = tk.Frame(panel, bg="#171717")
+        character_frame.pack(fill="x", padx=18, pady=(16, 0))
+        tk.Label(character_frame, text="Personagem e aparência", bg="#171717", fg="white",
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
+        character_line = tk.Frame(character_frame, bg="#171717")
+        character_line.pack(fill="x")
+        self.character_picker = ttk.Combobox(character_line, state="readonly", width=16)
+        self.character_picker.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.character_picker.bind("<<ComboboxSelected>>", self._select_character_from_panel)
+        self.appearance_picker = ttk.Combobox(character_line, state="readonly", width=12,
+                                              values=("Traços", "Circuito"))
+        self.appearance_picker.pack(side="left", padx=(0, 8))
+        self.appearance_picker.bind("<<ComboboxSelected>>", self._select_appearance_from_panel)
+        self.add_character_button = tk.Button(character_line, text="Adicionar", command=self.add_character,
+                                             bg="#333333", fg="white", bd=0, padx=10, pady=5)
+        self.add_character_button.pack(side="left", padx=(0, 8))
+        self.remove_character_button = tk.Button(character_line, text="Remover", command=self.remove_character,
+                                                bg="#333333", fg="white", bd=0, padx=10, pady=5)
+        self.remove_character_button.pack(side="left")
+        self._update_character_picker()
         scene_frame = tk.Frame(panel, bg="#171717")
         scene_frame.pack(fill="x", padx=18, pady=(16, 0))
         tk.Label(scene_frame, text="Cena visual", bg="#171717", fg="white",
@@ -986,13 +1164,17 @@ class StickmanDesktop:
         tk.Button(row, text="Cancelar", command=lambda: self._close_panel(panel), bg="#333333",
                   fg="white", bd=0, font=("Segoe UI", 11), padx=20, pady=8).pack(side="left", padx=10)
         entry.bind("<Return>", lambda _e: run())
-        if focus_scene:
+        if focus_character:
+            self.character_picker.focus_force()
+        elif focus_scene:
             self.scene_picker.focus_force()
 
     def _close_panel(self, panel: tk.Toplevel) -> None:
         self.command_open, self.panel_hwnd = False, 0
         self.command_panel = None
         self.scene_picker = self.scene_status = self.scene_play_button = None
+        self.character_picker = self.appearance_picker = self.character_prompt = None
+        self.add_character_button = self.remove_character_button = None
         panel.destroy()
 
     def _tick(self) -> None:
@@ -1005,12 +1187,14 @@ class StickmanDesktop:
         if self.hidden:
             self.root.after(16, self._tick)
             return
-        self._update_behavior(now)
-        was_grounded = self.motion.grounded
-        self.motion.step(dt)
-        if not was_grounded and self.motion.grounded:
-            self.particles.burst(self.x, self.y - 2, color=self.color, count=8)
-        self._react_to_impacts(now)
+        for character in self.characters.values():
+            motion = character.motion
+            self._update_behavior(now, character)
+            was_grounded = motion.grounded
+            motion.step(dt)
+            if not was_grounded and motion.grounded:
+                self.particles.burst(motion.x, motion.y - 2, color=character.color, count=8)
+            self._react_to_impacts(now, character)
         self.particles.step(dt)
         self._update_gaze()
         self._render(dt)
@@ -1026,6 +1210,10 @@ class StickmanDesktop:
         self._end_drag()
         self._cancel_story()
         self.particles.close()
+        for character in self.characters.values():
+            character.renderer.close()
+        self.echo.close()
+        self._sprite_pack = None
         self.hotkeys.close()
         self.root.destroy()
 

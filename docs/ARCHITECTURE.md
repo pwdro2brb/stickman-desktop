@@ -4,7 +4,7 @@
 
 ### `animation.py`
 
-Renders the original articulated character and its visual sparring echo. Poses
+Renders articulated characters in **Traços** and the visual sparring echo. Poses
 include breathing, walking, jumping, falling, dragging, waving and fighting.
 Walking uses stance/swing foot targets and two-bone inverse kinematics, with
 velocity-synchronized timing and smoothed pose changes. Head and eye tracking
@@ -14,6 +14,33 @@ limit covering both active and free items. Expiration and `clear()` hide/recycle
 items; reuse restores their color, width, position and visibility. `close()`
 deletes every allocated item, is idempotent and prevents later allocations.
 Scene cancellation clears active effects and removes portals/scheduled callbacks.
+
+### `animation_state.py`
+
+Chooses one animation mode per character from motion, active gestures and elapsed
+time. The modes are idle, walk, jump, fall, drag, wave and fight. Airborne motion
+and dragging take priority over timed gestures. Transitions and repeated gestures
+start their frame clock again. The state machine provides the same mode and timing
+to both renderers. **Traços** retains its travel-based gait, inverse kinematics and
+live gaze.
+
+### `characters.py`
+
+Holds the roster definitions and per-character data. Every `DesktopCharacter` owns
+its `Motion`, renderer, animation state, behavior, pose and impact state. Stable
+IDs take precedence over display-name matches. Display names are normalized for
+lookup and must match a single actor. Spawn placement favors space near the
+selected character within the current work area.
+
+### `sprites.py`
+
+Loads a pack from a local `manifest.json` and PNG sheet. The original **Circuito**
+pack lives in `assets/sprites/circuito/` and ships as package data. The manifest
+describes the frame layout, foot anchor and timing for all seven modes. The loader
+validates the sheet and frame bounds before decoding and shares Tk images across
+renderers. Each sprite renderer updates one Canvas image, mirrors facing direction
+and keeps the foot anchor aligned with the motion coordinates. Eye positions are
+part of the artwork. **Traços** computes its gaze from the pointer.
 
 ### `scenes.py`
 
@@ -56,7 +83,7 @@ Contains the Win32 boundary:
 
 ### `app.py`
 
-Owns the Tkinter overlay, character state, animation loop, command panel, tray
+Owns the Tkinter overlay, roster selection, animation loop, command panel, tray
 event routing and validated scene playback.
 
 ### `motion.py`
@@ -69,11 +96,12 @@ application window or execute a tool.
 ## Tray lifecycle and hidden mode
 
 The tray uses an original orange icon and Win32 APIs without extra dependencies.
-`ocultar` cancels scene/autonomy, clears effects, closes auxiliary panels and
-withdraws the overlay. The tick loop pauses physics and rendering while hidden;
-hotkey and tray polling continue. Restoring resets the tick clock so hidden time
-does not become a large physics step, recovers interactive mode and places an
-off-screen character back inside a usable work area.
+`ocultar` cancels the scene and autonomous behaviors, clears effects, closes
+auxiliary panels and withdraws the overlay. The tick loop pauses every character's
+physics and rendering while hidden. Hotkey and tray polling continue. Restoring
+resets the tick clock so hidden time does not become a large physics step,
+recovers interactive mode and places off-screen characters back inside a usable
+work area.
 
 The tray menu and `restaurar` recover the overlay. `F2` restores and opens commands,
 `F3` restores interactive mode, and `F4` restores and plays the selected scene.
@@ -103,7 +131,8 @@ The `F2` panel contains a scene selector, **Iniciar** and **Recarregar**, with
 catalog errors displayed below. Commands `cenas`, `cena <id>` and `recarregar
 cenas` expose the same controls; `F4` plays the selection. A bad file does not
 prevent valid scenes from loading, while ambiguous duplicate IDs are removed.
-Starting another scene, reloading, stopping or hiding cancels previous scheduled
+The selected character performs the scene. Starting another scene, changing
+character selection, reloading, stopping or hiding cancels previous scheduled
 steps and clears portals, poses, the echo and active particles.
 
 ## Window awareness
@@ -152,24 +181,32 @@ minimization or closure causes a fall. `descer` drops through the current suppor
 instead of immediately landing back on it. Landing considers the crossing of a
 surface during descent, rather than requiring an exact frame position.
 
-Dragging a character stroke interrupts its current activity and places it under
+Dragging a character interrupts its current activity and places it under
 pointer control. Release velocity determines the throw strength. Thrown characters
 bounce against desktop boundaries with energy loss, eventually settle, and
 report strong impacts to the app for short, playful reactions after repeated
 collisions. Normal jumps still land without a throw bounce. Walking is 140 px/s,
-with gait timing tied to travel instead of a fixed absolute clock. Double-clicking jumps and
-right-clicking opens the character's action menu. Mouse interaction is disabled
-in click-through mode. `explorar` chooses visual walks and eligible window leaps;
-`seguir mouse` follows the cursor horizontally without sending mouse input.
-`parar` cancels exploration, following and scheduled story actions. `acenar`
-temporarily changes the character's pose. These behaviors add no dependencies
-and do not move, resize, click or minimize application windows.
+with gait timing tied to travel in **Traços**. Clicking selects the character,
+double-clicking makes it jump and right-clicking opens its action menu. Mouse
+interaction is disabled in click-through mode. `explorar` chooses visual walks
+and eligible window leaps. `seguir mouse` follows the cursor horizontally
+without sending mouse input.
+`parar` cancels exploration, following and scheduled story actions for the selected
+character. `acenar` temporarily changes its pose. The motion behaviors use only
+window metadata and pointer coordinates.
+
+The overlay begins with the configured main character and can hold up to three
+companions. The tick loop updates all motions independently, using the same
+snapshot of monitors and visible windows. The `F2` panel changes the command
+target and appearance. Mouse actions select their target by its Canvas tag.
+Switching appearance replaces the Canvas renderer while retaining motion and
+animation state. Removing a companion releases its Canvas resources. The main
+character remains available.
 
 Mixed-DPI monitor alignment depends on Windows and Tk coordinate scaling. A
 restart may be needed after changing display scaling; hardware combinations
 still need manual verification. Window platforms come from metadata and can
-correspond to partly covered windows. Sprite animation, multiple persistent
-characters and a dedicated animation state machine remain future work.
+correspond to partly covered windows.
 
 ### Windows verification
 
@@ -216,6 +253,25 @@ For movement and interaction checks:
    the separate floors. Rearrange monitors and confirm the layout refreshes.
 8. Toggle `F3` and confirm character mouse gestures follow click-through state
    while `F2` and `F4` remain available.
+
+For character and appearance checks:
+
+1. Open `F2`, choose **Adicionar** in **Personagem e aparência**, and confirm
+   Faísca appears in **Circuito**. Add Íris and Nimbo, then verify the roster stops
+   at four characters.
+2. Start `explorar` with one character. Select a second character by name and run
+   `seguir mouse`, then `parar`. Confirm the first keeps exploring and the second
+   stops. Try selecting by ID as well.
+3. Click, drag, double-click and right-click different characters. Confirm the
+   clicked character becomes the command target and receives the action.
+4. While a companion is moving, switch between **Traços** and **Circuito**. Check
+   both facing directions and all animation modes. Confirm the feet stay aligned
+   with the floor and the pointer still moves the head and eyes in **Traços**.
+5. Start a scene and select another character before a delayed action plays.
+   Confirm the scene cancels and the new selection receives no leftover action.
+6. Remove a selected companion and confirm it disappears while the main character
+   stays available. Hide and restore with several characters present and confirm
+   that hiding pauses every character.
 
 For tray, scene and pooled-effect checks:
 

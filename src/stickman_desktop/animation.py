@@ -63,6 +63,11 @@ class CharacterRenderer:
         for item in self.parts.values():
             self.canvas.itemconfigure(item, state="normal" if visible else "hidden")
 
+    def close(self) -> None:
+        for item in self.parts.values():
+            self.canvas.delete(item)
+        self.parts.clear()
+
     @classmethod
     def _foot(cls, cycle: float) -> tuple[float, float]:
         cycle %= 1.0
@@ -78,7 +83,8 @@ class CharacterRenderer:
 
     def render(self, x: float, y: float, direction: int, mode: str,
                phase: float, vy: float = 0, *, gaze: tuple[float, float] | None = None,
-               dt: float | None = None, vx: float | None = None) -> None:
+               dt: float | None = None, vx: float | None = None,
+               state_elapsed: float | None = None) -> None:
         values = [x, y, direction, phase, vy]
         if gaze is not None:
             values.extend(gaze)
@@ -86,6 +92,8 @@ class CharacterRenderer:
             values.append(dt)
         if vx is not None:
             values.append(vx)
+        action_time = phase if state_elapsed is None else state_elapsed
+        values.append(action_time)
         if not all(math.isfinite(value) for value in values) or (dt is not None and dt < 0):
             raise ValueError("Character coordinates and elapsed time must be finite and valid.")
         elapsed = dt if dt is not None else (
@@ -134,14 +142,14 @@ class CharacterRenderer:
             foot1 = (facing * 15, -12 if rising else self.FOOT_CENTER)
             foot2 = (-facing * 12, -7 if rising else self.FOOT_CENTER)
         elif mode == "drag":
-            sway = math.sin(phase * 4.2) * 2
+            sway = math.sin(action_time * 4.2) * 2
             hip, shoulder = (sway * 0.5, -39.0), (sway, -63.0)
             hand1, hand2 = (12, -87), (-12, -85)
             foot1, foot2 = (10 + sway, self.FOOT_CENTER), (-10 + sway, -4.0)
         elif mode == "wave":
-            hand1 = (facing * (23 + math.sin(phase * 8) * 4), -87)
+            hand1 = (facing * (23 + math.sin(action_time * 8) * 4), -87)
         elif mode == "fight":
-            punch = (math.sin(phase * 10) + 1) * 0.5
+            punch = (math.sin(action_time * 10) + 1) * 0.5
             hip, shoulder = (facing * 2, -36.0), (facing * 6, -60.0)
             hand1, hand2 = (facing * (25 + punch * 9), -59), (facing * 14, -68)
             foot1, foot2 = (facing * 18, self.FOOT_CENTER), (-facing * 18, self.FOOT_CENTER)
