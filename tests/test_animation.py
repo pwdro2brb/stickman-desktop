@@ -96,10 +96,15 @@ def test_particle_bursts_obey_cap_and_expiration_frees_capacity():
     particles.burst(100, 200, count=12)
     particles.burst(100, 200, count=12)
     assert len(canvas.items) == len(particles.particles) == 15
+    identities = set(canvas.items)
     particles.step(1)
-    assert not canvas.items and not particles.particles
+    assert not particles.particles
+    assert set(canvas.items) == identities
+    assert all(item["state"] == "hidden" for item in canvas.items.values())
     particles.burst(100, 200, count=12)
-    assert len(canvas.items) == len(particles.particles) == 12
+    assert set(canvas.items) == identities
+    assert len(particles.particles) == 12
+    assert sum(item["state"] == "normal" for item in canvas.items.values()) == 12
 
 
 def test_particles_move_existing_items_and_clear_is_idempotent():
@@ -115,18 +120,28 @@ def test_particles_move_existing_items_and_clear_is_idempotent():
                for coordinate in item["coordinates"])
     particles.clear()
     particles.clear()
-    assert not canvas.items and not particles.particles
+    assert not particles.particles
+    assert set(canvas.items) == set(initial)
+    assert all(item["state"] == "hidden" for item in canvas.items.values())
+    particles.burst(100, 200, count=3)
+    assert set(canvas.items) == set(initial)
+    assert len(particles.particles) == 3
 
 
-def test_repeated_particle_effects_leave_no_canvas_objects():
+def test_repeated_particle_effects_reuse_a_bounded_pool():
     canvas = FakeCanvas()
     particles = Particles(canvas, max_count=20)
-    for _ in range(100):
+    for _ in range(1000):
         particles.burst(100, 200, count=30)
         assert len(canvas.items) <= 20
         particles.step(0.1)
     particles.step(1)
-    assert not canvas.items and not particles.particles
+    assert not particles.particles
+    assert len(canvas.items) == particles.allocated_count == 20
+    assert canvas.next_id == 21
+    assert all(item["state"] == "hidden" for item in canvas.items.values())
+    particles.close()
+    assert not canvas.items
 
 
 @pytest.mark.parametrize("dt", [-0.1, float("nan"), float("inf")])
@@ -280,3 +295,69 @@ def test_two_bone_solver_handles_coincident_and_unreachable_targets(target):
         assert endpoint == pytest.approx(target, abs=1e-5)
     else:
         assert math.hypot(*endpoint) <= 42
+
+
+def test_recycled_particles_restore_color_width_and_visibility():
+    canvas = FakeCanvas()
+    particles = Particles(canvas, max_count=3)
+    particles.burst(100, 200, color="#00cfff", count=3)
+    identities = set(canvas.items)
+    particles.step(0.05)
+    assert all(item["width"] < 2.2 for item in canvas.items.values())
+    particles.step(1)
+    particles.burst(400, 500, color="#ff7a00", count=3)
+    assert set(canvas.items) == identities
+    assert all(item["fill"] == "#ff7a00" for item in canvas.items.values())
+    assert all(item["width"] == 2.2 and item["state"] == "normal"
+               for item in canvas.items.values())
+    assert all(canvas.coords(item)[0:2] == (400, 500) for item in identities)
+
+
+def test_pool_cap_includes_both_active_and_expired_particles():
+    canvas = FakeCanvas()
+    particles = Particles(canvas, max_count=5)
+    particles.burst(0, 0, count=5)
+    identities = set(canvas.items)
+    for particle in particles.particles[:2]:
+        particle.ttl = 0.001
+    particles.step(0.01)
+    assert len(particles.particles) == 3
+    particles.burst(0, 0, count=20)
+    assert len(particles.particles) == particles.allocated_count == 5
+    assert set(canvas.items) == identities
+    assert canvas.next_id == 6
+
+
+def test_close_deletes_active_and_free_items_and_prevents_new_allocations():
+    canvas = FakeCanvas()
+    particles = Particles(canvas, max_count=5)
+    particles.burst(0, 0, count=5)
+    for particle in particles.particles[:2]:
+        particle.ttl = 0.001
+    particles.step(0.01)
+    assert len(particles.particles) == 3
+    particles.close()
+    particles.close()
+    particles.clear()
+    particles.step(1)
+    particles.burst(0, 0, count=5)
+    assert not canvas.items and not particles.particles
+    assert particles.allocated_count == 0
+    assert canvas.next_id == 6
+
+
+@pytest.mark.parametrize("max_count", [-1, 1.5, True])
+def test_particle_pool_rejects_invalid_limits(max_count):
+    with pytest.raises(ValueError):
+        Particles(FakeCanvas(), max_count=max_count)
+
+
+def test_zero_limit_clear_and_close_never_allocate_items():
+    canvas = FakeCanvas()
+    particles = Particles(canvas, max_count=0)
+    particles.burst(0, 0, count=100)
+    particles.clear()
+    particles.close()
+    particles.burst(0, 0)
+    assert particles.allocated_count == 0
+    assert canvas.next_id == 1

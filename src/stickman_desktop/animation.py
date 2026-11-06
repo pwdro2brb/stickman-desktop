@@ -216,37 +216,55 @@ class _Particle:
 
 
 class Particles:
-    """Short-lived sparks with a hard limit on live canvas objects."""
+    """Bounded sparks whose Canvas items are recycled between bursts."""
 
     def __init__(self, canvas, max_count: int = 120) -> None:
-        if max_count < 0:
-            raise ValueError("Particle limit must be non-negative.")
+        if not isinstance(max_count, int) or isinstance(max_count, bool) or max_count < 0:
+            raise ValueError("Particle limit must be a non-negative integer.")
         self.canvas = canvas
         self.max_count = max_count
         self.particles: list[_Particle] = []
+        self._free_items: list[int] = []
+        self._allocated: set[int] = set()
+        self._closed = False
+
+    @property
+    def allocated_count(self) -> int:
+        return len(self._allocated)
 
     def burst(self, x: float, y: float, color: str = "#ffe600", count: int = 12) -> None:
         if not all(math.isfinite(value) for value in (x, y)):
             raise ValueError("Particle coordinates must be finite.")
+        if self._closed:
+            return
         for _ in range(max(0, min(count, self.max_count - len(self.particles)))):
             vx, vy = random.uniform(-130, 130), random.uniform(-180, 25)
             lifetime = random.uniform(0.25, 0.6)
-            item = self.canvas.create_line(
-                x, y, x + vx * 0.025, y + vy * 0.025,
-                fill=color, width=2.2, capstyle="round", tags=("particle",),
-            )
+            coordinates = (x, y, x + vx * 0.025, y + vy * 0.025)
+            if self._free_items:
+                item = self._free_items[-1]
+                self.canvas.itemconfigure(item, fill=color, width=2.2, state="normal")
+                self.canvas.coords(item, *coordinates)
+                self._free_items.pop()
+            else:
+                item = self.canvas.create_line(
+                    *coordinates, fill=color, width=2.2, state="normal",
+                    capstyle="round", tags=("particle",),
+                )
+                self._allocated.add(item)
             self.particles.append(_Particle(item, x, y, vx, vy, lifetime, lifetime))
 
     def step(self, dt: float) -> None:
         if not math.isfinite(dt) or dt < 0:
             raise ValueError("Particle time step must be finite and non-negative.")
-        if dt == 0:
+        if dt == 0 or self._closed:
             return
         alive = []
         for particle in self.particles:
             particle.ttl -= dt
             if particle.ttl <= 0:
-                self.canvas.delete(particle.item)
+                self.canvas.itemconfigure(particle.item, state="hidden")
+                self._free_items.append(particle.item)
                 continue
             particle.vy += 380 * dt
             particle.x += particle.vx * dt
@@ -259,6 +277,19 @@ class Particles:
         self.particles = alive
 
     def clear(self) -> None:
+        """Hide active effects while retaining the bounded pool for reuse."""
         for particle in self.particles:
-            self.canvas.delete(particle.item)
+            self.canvas.itemconfigure(particle.item, state="hidden")
+            self._free_items.append(particle.item)
         self.particles.clear()
+
+    def close(self) -> None:
+        """Delete all owned Canvas items and permanently close this pool."""
+        if self._closed:
+            return
+        for item in self._allocated:
+            self.canvas.delete(item)
+        self._allocated.clear()
+        self._free_items.clear()
+        self.particles.clear()
+        self._closed = True

@@ -11,6 +11,7 @@ from stickman_desktop.windows import WindowInfo
 def desktop(monkeypatch):
     desktop = StickmanDesktop.__new__(StickmanDesktop)
     desktop.root = Mock()
+    desktop._closing = False
     desktop.root.winfo_id.return_value = 10
     desktop.panel_hwnd = 20
     desktop.windows_panel = None

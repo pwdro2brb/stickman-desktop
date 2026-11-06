@@ -3,6 +3,20 @@ import pytest
 from stickman_desktop.core import normalize, parse_command
 
 
+@pytest.mark.parametrize("text,action,argument", [
+    ("cenas", "scenes", ""), ("listar cenas", "scenes", ""),
+    ("cena echo_duel", "scene", "echo_duel"),
+    ("CENA minha-cena_2", "scene", "minha-cena_2"),
+    ("cena ../../calc.exe", "scene", "../../calc.exe"),
+    ("recarregar cenas", "reload_scenes", ""),
+    ("ocultar personagem", "hide", ""), ("ocultar", "hide", ""),
+    ("mostrar", "restore", ""), ("restaurar personagem", "restore", ""),
+])
+def test_scene_and_visibility_commands(text, action, argument):
+    parsed = parse_command(text)
+    assert (parsed.action, parsed.argument) == (action, argument)
+
+
 def test_normalize_accents():
     assert normalize("História!") == "historia"
 

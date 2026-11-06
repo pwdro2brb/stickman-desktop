@@ -16,7 +16,7 @@
 - [x] Support multiple monitors (virtual desktop and per-monitor floors)
 - [x] Walk on window edges (`subir na janela`, `andar`, `descer`)
 - [x] React to moved and resized windows (follow support or fall when it disappears)
-- [ ] Add a proper tray icon and restore menu
+- [x] Add a proper tray icon and restore menu (native Win32, hide/restore and actions)
 
 ## 0.4 - Animation system
 
@@ -27,9 +27,9 @@
 
 - [ ] Replace procedural limbs with an animation state machine
 - [ ] Load original sprite packs
-- [ ] Configurable scenes in JSON
+- [x] Configurable scenes in JSON (validated visual actions, selection and live reload)
 - [ ] Multiple characters
-- [ ] Particle pooling and effect cleanup
+- [x] Particle pooling and effect cleanup (bounded reusable Canvas items and explicit shutdown)
 
 ## 0.5 - Accessibility perception
 

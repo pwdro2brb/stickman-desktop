@@ -14,6 +14,8 @@ from .environment import FOOT_CLEARANCE, desktop_surfaces, nearest_monitor, virt
 from .gestures import PointerVelocity
 from .motion import Motion
 from .core import parse_command
+from .scenes import BUILTIN_SCENES_DIR, SceneStep, load_scenes
+from .tray import TrayIcon
 from .windows import (
     GlobalHotkeys,
     MonitorInfo,
@@ -67,6 +69,18 @@ class StickmanDesktop:
         pl, _pt, pr, pb = primary.work_rect
         start_x = max(pl + 28, min(pr - 28, pl + float(character.get("start_x", 120))))
         self.motion = Motion(self.sw, self.sh, start_x - left, pb - top - self.ground_offset - FOOT_CLEARANCE)
+        self.hidden = False
+        self._closing = False
+        self.tray: TrayIcon | None = None
+        self.scenes = ()
+        self.scene_errors = ()
+        self.selected_scene_id = ""
+        self.scene_picker: ttk.Combobox | None = None
+        self.scene_status: tk.StringVar | None = None
+        self.scene_play_button: tk.Button | None = None
+        self.command_panel: tk.Toplevel | None = None
+        self._story_generation = 0
+        self.reload_scenes(notify=False)
         self.frame = 0
         self.behavior = "manual"
         self.pose: str | None = None
@@ -111,10 +125,23 @@ class StickmanDesktop:
         self.hotkeys = GlobalHotkeys()
         self.hotkeys.register()
         self.root.protocol("WM_DELETE_WINDOW", self.close)
+        tray_error = False
+        try:
+            self.tray = TrayIcon()
+            self.tray.start()
+            self._update_tray()
+        except OSError:
+            if self.tray is not None:
+                self.tray.close()
+            self.tray = None
+            tray_error = True
         self.root.after(100, self._capture_external_window)
         self.root.after(20, self._poll_hotkeys)
         self.root.after(16, self._tick)
-        self.say("Olá! F2 abre comandos, F3 libera cliques e F4 inicia uma história.", 6)
+        if tray_error:
+            self.say("A bandeja está indisponível. F2 abre os comandos; o personagem continuará visível.", 7)
+        else:
+            self.say("Olá! Estou também na bandeja. F2 abre comandos e F4 inicia a cena selecionada.", 6)
 
     @property
     def own_hwnds(self) -> set[int]:
@@ -186,7 +213,6 @@ class StickmanDesktop:
         was_story = self.story_running
         self._cancel_story()
         self.pose = None
-        self.particles.clear()
         if was_story:
             self.motion.stop()
         self.motion.reframe(right - left, bottom - top,
@@ -271,6 +297,8 @@ class StickmanDesktop:
             self.canvas.itemconfigure(self.bubble_text, state="hidden")
 
     def _capture_external_window(self) -> None:
+        if self._closing:
+            return
         self._refresh_desktop()
         self._refresh_windows()
         self.root.after(250, self._capture_external_window)
@@ -299,6 +327,8 @@ class StickmanDesktop:
         return True
 
     def show_window_list(self) -> None:
+        if self.hidden:
+            self.restore_overlay()
         if self.windows_panel is not None:
             self._refresh_windows()
             self.windows_panel.deiconify()
@@ -388,7 +418,77 @@ class StickmanDesktop:
         if panel is not None:
             panel.destroy()
 
+    def _update_tray(self) -> None:
+        if self.tray is not None:
+            self.tray.set_state(hidden=self.hidden, click_through=self.click_through)
+
+    def hide_overlay(self) -> None:
+        if self.hidden or self._closing:
+            return
+        if self.tray is None or not self.tray.available:
+            self.say("A bandeja está indisponível; vou permanecer visível para você me encontrar.", 5)
+            return
+        self._take_control()
+        self.motion.stop()
+        if self.command_panel is not None:
+            self._close_panel(self.command_panel)
+        self._close_window_list()
+        self.hidden = True
+        self.root.withdraw()
+        self._update_tray()
+
+    def restore_overlay(self) -> None:
+        if self._closing:
+            return
+        self.hidden = False
+        self.root.deiconify()
+        self.root.update_idletasks()
+        position_overlay(int(self.root.winfo_id()), virtual_bounds(self.monitors))
+        self.click_through = False
+        set_click_through(top_level_window(int(self.root.winfo_id())), False)
+        self._place_control()
+        self.root.lift()
+        # Recover a character left outside the work areas by a display change.
+        gx, gy = self.x + self.origin_x, self.y + self.origin_y
+        visible = any(m.work_rect[0] + 28 <= gx <= m.work_rect[2] - 28
+                      and m.work_rect[1] + 100 <= gy <= m.work_rect[3] for m in self.monitors)
+        if not visible:
+            primary = next((m for m in self.monitors if m.primary), self.monitors[0])
+            left, _top, right, bottom = primary.work_rect
+            self.motion.drag_to((left + right) / 2 - self.origin_x,
+                                bottom - self.origin_y - self.ground_offset - FOOT_CLEARANCE)
+            self.motion.release()
+            self.motion.step(0.01)
+        self._last_tick = time.monotonic()
+        self._update_tray()
+        self._update_gaze()
+        self._render(0)
+
+    def _handle_tray_event(self, event: str) -> None:
+        if event == "restore":
+            self.restore_overlay()
+        elif event == "toggle_visible":
+            self.restore_overlay() if self.hidden else self.hide_overlay()
+        elif event == "commands":
+            self.open_command_panel()
+        elif event == "windows":
+            self.show_window_list()
+        elif event == "explore":
+            if self.hidden:
+                self.restore_overlay()
+            self.explore()
+        elif event == "story":
+            self.start_story()
+        elif event == "stop":
+            self.stop()
+        elif event == "toggle_click_through":
+            self.toggle_click_through()
+        elif event == "quit":
+            self.close()
+
     def _poll_hotkeys(self) -> None:
+        if self._closing:
+            return
         for event in self.hotkeys.poll():
             if event == 1:
                 self.open_command_panel()
@@ -396,6 +496,11 @@ class StickmanDesktop:
                 self.toggle_click_through()
             elif event == 3:
                 self.start_story()
+        if self.tray is not None:
+            for event in self.tray.poll():
+                self._handle_tray_event(event)
+                if self._closing:
+                    return
         self.root.after(20, self._poll_hotkeys)
 
     def say(self, text: str, seconds: float = 4) -> None:
@@ -558,7 +663,8 @@ class StickmanDesktop:
             ("Seguir mouse", self.follow_mouse), ("Acenar", self.wave),
             ("Parar", self.stop), ("História", self.start_story),
             ("Comandos (F2)", self.open_command_panel),
-            ("Liberar cliques (F3)", self.toggle_click_through), ("Sair", self.close),
+            ("Liberar cliques (F3)", self.toggle_click_through),
+            ("Ocultar na bandeja", self.hide_overlay), ("Sair", self.close),
         ]:
             menu.add_command(label=label, command=command)
         try:
@@ -568,6 +674,9 @@ class StickmanDesktop:
             menu.destroy()
 
     def toggle_click_through(self) -> None:
+        if self.hidden:
+            self.restore_overlay()
+            return
         self._end_drag()
         self.click_through = not self.click_through
         set_click_through(top_level_window(int(self.root.winfo_id())), self.click_through)
@@ -577,6 +686,7 @@ class StickmanDesktop:
             self._place_control()
             self.root.lift()
             self.say("Modo interativo restaurado.", 3)
+        self._update_tray()
 
     def inspect(self) -> None:
         self._refresh_windows()
@@ -615,14 +725,18 @@ class StickmanDesktop:
 
     def _schedule_scene(self, delay: int, callback, story: bool = False) -> None:
         jobs = self._story_jobs if story else self._scene_jobs
+        generation = self._story_generation
         def run() -> None:
+            if token not in jobs:
+                return
             jobs.discard(token)
-            if not story or self.story_running:
+            if generation == self._story_generation and (not story or self.story_running):
                 callback()
         token = self.root.after(delay, run)
         jobs.add(token)
 
     def _cancel_story(self) -> None:
+        self._story_generation += 1
         self.story_running = False
         for jobs in (self._story_jobs, self._scene_jobs):
             for token in tuple(jobs):
@@ -632,8 +746,9 @@ class StickmanDesktop:
             self.canvas.delete(item)
         self._scene_items.clear()
         self._echo_visible = False
+        self.particles.clear()
 
-    def portal(self, manual: bool = True) -> None:
+    def portal(self, manual: bool = True, duration: float = 6) -> None:
         if manual:
             self._take_control()
         self.pose = None
@@ -653,24 +768,107 @@ class StickmanDesktop:
             for item in ids:
                 self.canvas.delete(item)
                 self._scene_items.discard(item)
-        self._schedule_scene(6000, cleanup)
+        self._schedule_scene(round(duration * 1000), cleanup)
 
-    def start_story(self) -> None:
-        if self.story_running:
+    def reload_scenes(self, notify: bool = True) -> None:
+        if notify:
+            self._take_control()
+            self.motion.stop()
+        catalog = load_scenes(BUILTIN_SCENES_DIR)
+        self.scenes, self.scene_errors = catalog.scenes, catalog.errors
+        ids = {scene.id for scene in self.scenes}
+        if self.selected_scene_id not in ids:
+            self.selected_scene_id = ("echo_duel" if "echo_duel" in ids else
+                                      self.scenes[0].id if self.scenes else "")
+        self._update_scene_picker()
+        if notify:
+            message = f"{len(self.scenes)} cena(s) disponível(is)."
+            if self.scene_errors:
+                message += " Alguns arquivos precisam de correção; veja o painel de cenas."
+            self.say(message, 5)
+
+    def _update_scene_picker(self) -> None:
+        if self.scene_picker is None:
+            return
+        self.scene_picker.configure(values=[scene.name for scene in self.scenes],
+                                    state="readonly" if self.scenes else "disabled")
+        if self.scenes:
+            selected = next((i for i, scene in enumerate(self.scenes)
+                             if scene.id == self.selected_scene_id), 0)
+            self.scene_picker.current(selected)
+        else:
+            self.scene_picker.set("Nenhuma cena válida")
+        if self.scene_play_button is not None:
+            self.scene_play_button.configure(state="normal" if self.scenes else "disabled")
+        if self.scene_status is not None:
+            status = f"{len(self.scenes)} cena(s). Edite os arquivos JSON e clique Recarregar."
+            if self.scene_errors:
+                status = f"{len(self.scene_errors)} arquivo(s) ignorado(s): {self.scene_errors[0]}"
+            self.scene_status.set(status)
+
+    def _select_scene(self, _event=None) -> None:
+        if self.scene_picker is not None:
+            index = self.scene_picker.current()
+            if 0 <= index < len(self.scenes):
+                self.selected_scene_id = self.scenes[index].id
+
+    def start_story(self, scene_id: str | None = None) -> None:
+        if self.hidden:
+            self.restore_overlay()
+        chosen = scene_id or self.selected_scene_id
+        scene = next((item for item in self.scenes if item.id == chosen), None)
+        if scene is None:
+            self.say("Cena não encontrada. Abra cenas para selecionar ou recarregar os arquivos JSON.", 6)
+            return
+        if self.story_running and scene_id is None:
             return
         self._take_control()
         self.motion.stop()
+        self.selected_scene_id = scene.id
         self.story_running = True
-        self.say("Um eco digital quer testar meus reflexos…", 4)
-        left, _top, right, _bottom = self._work_area()
-        self._schedule_scene(2000, lambda: self.motion.walk_to((left + right) / 2), story=True)
-        self._schedule_scene(4500, self._fight, story=True)
-        self._schedule_scene(9500, lambda: self.portal(manual=False), story=True)
-        self._schedule_scene(16000, self._finish_story, story=True)
+        self.say(f"Cena: {scene.name}", 2)
+        for step in scene.steps:
+            self._schedule_scene(round(step.at * 1000),
+                                 lambda item=step: self._run_scene_step(item), story=True)
+        self._schedule_scene(round(scene.duration * 1000), self._finish_story, story=True)
 
-    def _fight(self) -> None:
+    def _run_scene_step(self, step: SceneStep) -> None:
+        if step.action == "say":
+            self.say(step.args["text"], 4)
+        elif step.action == "walk":
+            left, _top, right, _bottom = self._work_area()
+            self.motion.walk_to(left + 28 + (right - left - 56) * step.args["fraction"])
+        elif step.action == "jump":
+            self.motion.jump()
+        elif step.action == "wave":
+            self.motion.stop()
+            self._echo_visible = False
+            self._scene_pose("wave", step.args["duration"])
+        elif step.action == "climb":
+            self._refresh_windows()
+            options = [surface for surface in self._playground() if surface.kind == "window"]
+            key = f"window:{self.last_external_window.hwnd}" if self.last_external_window else ""
+            target = next((item for item in options if item.key == key), options[0] if options else None)
+            if target is not None:
+                self.motion.leap_to(target.key)
+        elif step.action == "fight":
+            self._fight(step.args["duration"])
+        elif step.action == "portal":
+            self.portal(manual=False, duration=step.args["duration"])
+
+    def _scene_pose(self, pose: str, duration: float) -> None:
+        end = time.monotonic() + duration
+        self.pose, self.pose_until = pose, end
+        def finish() -> None:
+            if self.pose == pose and self.pose_until == end:
+                self.pose = None
+                if pose == "fight":
+                    self._echo_visible = False
+        self._schedule_scene(round(duration * 1000), finish, story=self.story_running)
+
+    def _fight(self, duration: float = 5) -> None:
         self.motion.stop()
-        self.pose, self.pose_until = "fight", time.monotonic() + 5
+        self._scene_pose("fight", duration)
         self._echo_visible = True
         self.say("Sua vez, eco!", 3)
         self.particles.burst(self.x + self.direction * 70, self.y - 50, count=16)
@@ -679,7 +877,7 @@ class StickmanDesktop:
         self._cancel_story()
         self.pose = None
         self.motion.stop()
-        self.say("Bom treino! Até a próxima aventura.", 4)
+        self.say("Cena concluída. Até a próxima aventura!", 4)
 
     def execute(self, text: str) -> None:
         parsed = parse_command(text)
@@ -700,22 +898,34 @@ class StickmanDesktop:
         elif parsed.action == "minimize": self.minimize_external()
         elif parsed.action == "open": self.open_allowed_app(parsed.argument)
         elif parsed.action == "story": self.start_story()
+        elif parsed.action == "scene": self.start_story(parsed.argument)
+        elif parsed.action == "scenes": self.open_command_panel(focus_scene=True)
+        elif parsed.action == "reload_scenes": self.reload_scenes()
+        elif parsed.action == "hide": self.hide_overlay()
+        elif parsed.action == "restore": self.restore_overlay()
         elif parsed.action == "portal": self.portal()
         elif parsed.action == "help":
-            self.say("subir na janela | descer | explorar | seguir mouse | parar | acenar | andar 500 | pular | listar janelas | história | portal", 10)
+            self.say("subir na janela | explorar | seguir mouse | parar | cenas | cena echo_duel | recarregar cenas | ocultar | restaurar | listar janelas", 10)
         elif parsed.action != "empty":
             self.say("Comando desconhecido. Digite ajuda.", 4)
 
-    def open_command_panel(self) -> None:
+    def open_command_panel(self, focus_scene: bool = False) -> None:
+        if self.hidden:
+            self.restore_overlay()
         self._end_drag()
         if self.command_open:
+            if self.command_panel is not None:
+                self.command_panel.lift()
+            if focus_scene and self.scene_picker is not None:
+                self.scene_picker.focus_force()
             return
         # Capture the external target before the panel takes keyboard focus.
         self._refresh_windows()
         self.command_open = True
         panel = tk.Toplevel(self.root)
+        self.command_panel = panel
         panel.title("Comandos do Stickman")
-        panel.geometry("620x390+80+80")
+        panel.geometry("650x540+80+80")
         panel.attributes("-topmost", True)
         panel.configure(bg="#171717")
         panel.update_idletasks()
@@ -742,6 +952,29 @@ class StickmanDesktop:
                                ("Seguir mouse", "seguir mouse"), ("Acenar", "acenar"), ("Parar", "parar")]:
             tk.Button(quick, text=label, command=lambda value=command: quick_run(value),
                       bg="#292929", fg="white", bd=0, padx=10, pady=6).pack(side="left", padx=(0, 6))
+        scene_frame = tk.Frame(panel, bg="#171717")
+        scene_frame.pack(fill="x", padx=18, pady=(16, 0))
+        tk.Label(scene_frame, text="Cena visual", bg="#171717", fg="white",
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
+        line = tk.Frame(scene_frame, bg="#171717")
+        line.pack(fill="x")
+        self.scene_picker = ttk.Combobox(line, state="readonly", width=28)
+        self.scene_picker.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.scene_picker.bind("<<ComboboxSelected>>", self._select_scene)
+        def play_scene() -> None:
+            self._select_scene()
+            chosen = self.selected_scene_id
+            self._close_panel(panel)
+            self.start_story(chosen)
+        self.scene_play_button = tk.Button(line, text="Iniciar", command=play_scene,
+                                          bg="#ff7a00", fg="white", bd=0, padx=12, pady=6)
+        self.scene_play_button.pack(side="left", padx=(0, 8))
+        tk.Button(line, text="Recarregar", command=self.reload_scenes,
+                  bg="#333333", fg="white", bd=0, padx=12, pady=6).pack(side="left")
+        self.scene_status = tk.StringVar(panel)
+        tk.Label(scene_frame, textvariable=self.scene_status, wraplength=600,
+                 bg="#171717", fg="#bdbdbd", font=("Segoe UI", 9)).pack(anchor="w", pady=(6, 0))
+        self._update_scene_picker()
         row = tk.Frame(panel, bg="#171717")
         row.pack(fill="x", padx=18, pady=18)
         def run() -> None:
@@ -753,16 +986,25 @@ class StickmanDesktop:
         tk.Button(row, text="Cancelar", command=lambda: self._close_panel(panel), bg="#333333",
                   fg="white", bd=0, font=("Segoe UI", 11), padx=20, pady=8).pack(side="left", padx=10)
         entry.bind("<Return>", lambda _e: run())
+        if focus_scene:
+            self.scene_picker.focus_force()
 
     def _close_panel(self, panel: tk.Toplevel) -> None:
         self.command_open, self.panel_hwnd = False, 0
+        self.command_panel = None
+        self.scene_picker = self.scene_status = self.scene_play_button = None
         panel.destroy()
 
     def _tick(self) -> None:
+        if self._closing:
+            return
         now = time.monotonic()
         dt = min(0.05, max(0.0, now - self._last_tick))
         self._last_tick = now
         self.frame += 1
+        if self.hidden:
+            self.root.after(16, self._tick)
+            return
         self._update_behavior(now)
         was_grounded = self.motion.grounded
         self.motion.step(dt)
@@ -775,9 +1017,15 @@ class StickmanDesktop:
         self.root.after(16, self._tick)
 
     def close(self) -> None:
+        if self._closing:
+            return
+        self._closing = True
+        if self.tray is not None:
+            self.tray.close()
+            self.tray = None
         self._end_drag()
         self._cancel_story()
-        self.particles.clear()
+        self.particles.close()
         self.hotkeys.close()
         self.root.destroy()
 

@@ -9,8 +9,29 @@ include breathing, walking, jumping, falling, dragging, waving and fighting.
 Walking uses stance/swing foot targets and two-bone inverse kinematics, with
 velocity-synchronized timing and smoothed pose changes. Head and eye tracking
 uses a bounded, smoothed pointer target independently of body-facing direction.
-Character parts reuse Canvas items. Impact particles have a fixed count limit
-and expire automatically; scene cancellation removes portals and scheduled callbacks.
+Character parts reuse Canvas items. `Particles` pools Canvas IDs with a fixed
+limit covering both active and free items. Expiration and `clear()` hide/recycle
+items; reuse restores their color, width, position and visibility. `close()`
+deletes every allocated item, is idempotent and prevents later allocations.
+Scene cancellation clears active effects and removes portals/scheduled callbacks.
+
+### `scenes.py`
+
+Loads bounded UTF-8 JSON scene files from `assets/scenes/`. The immutable catalog
+contains valid scenes and per-file error messages. Validation rejects unknown
+fields/actions, duplicate JSON keys and scene IDs, non-finite or Boolean numeric
+values, files over 64 KiB and symbolic links. Scenes last 1–90 seconds, contain
+1–64 timed steps, and are sorted stably by `at`; equal-time steps retain file order.
+
+### `tray.py`
+
+Owns a native Windows notification-area icon and its hidden message window.
+Shell callbacks enqueue events for the app's Tk-thread polling cycle, rather than
+calling application actions reentrantly from a Win32 callback. The native menu
+supports restore, visibility, commands, window listing, exploration, scenes,
+stopping, click-through and exit. Double-clicking restores interactive mode.
+Explorer's `TaskbarCreated` message re-adds the icon after a shell restart.
+Shutdown removes the icon and releases owned Win32 resources.
 
 ### `core.py`
 
@@ -35,7 +56,8 @@ Contains the Win32 boundary:
 
 ### `app.py`
 
-Owns the Tkinter overlay, character state, animation loop, command panel and scripted story.
+Owns the Tkinter overlay, character state, animation loop, command panel, tray
+event routing and validated scene playback.
 
 ### `motion.py`
 
@@ -43,6 +65,46 @@ Platform-independent movement and support physics. `Surface` represents a window
 edge or a monitor floor; `Motion` manages walking, jumps, animated leaps, falling,
 dragging and landing using elapsed seconds. No movement method can change a real
 application window or execute a tool.
+
+## Tray lifecycle and hidden mode
+
+The tray uses an original orange icon and Win32 APIs without extra dependencies.
+`ocultar` cancels scene/autonomy, clears effects, closes auxiliary panels and
+withdraws the overlay. The tick loop pauses physics and rendering while hidden;
+hotkey and tray polling continue. Restoring resets the tick clock so hidden time
+does not become a large physics step, recovers interactive mode and places an
+off-screen character back inside a usable work area.
+
+The tray menu and `restaurar` recover the overlay. `F2` restores and opens commands,
+`F3` restores interactive mode, and `F4` restores and plays the selected scene.
+If the tray failed to initialize or is unavailable, hiding is refused; startup
+and the visible character continue to work. Exit releases tray resources, cancels
+callbacks and closes the particle pool before destroying Tk.
+
+## Declarative visual scenes
+
+The packaged scenes are `echo_duel` (**Duelo com o eco**) and `boas_vindas`
+(**Primeiros passos**). `pyproject.toml` includes their JSON files as package data,
+so normal installations retain the default scenes. No dependency or version
+change is required.
+
+Each file has exactly `id`, `name`, `duration` and `steps`. Steps use direct
+arguments, for example `{"at": 2, "action": "walk", "fraction": 0.5}`.
+The allowed actions are `say`, `walk`, `jump`, `wave`, `climb`, `fight` and
+`portal`. Walk fractions refer to the current work area's usable horizontal
+span. Pose/portal actions have bounded duration; climb skips when no eligible
+window edge is available.
+
+The app dispatches validated steps through `_run_scene_step`; this path never
+calls the command parser, `execute`, application launch or window minimization.
+Scene JSON is data for visual actions, not a tool/plugin interface.
+
+The `F2` panel contains a scene selector, **Iniciar** and **Recarregar**, with
+catalog errors displayed below. Commands `cenas`, `cena <id>` and `recarregar
+cenas` expose the same controls; `F4` plays the selection. A bad file does not
+prevent valid scenes from loading, while ambiguous duplicate IDs are removed.
+Starting another scene, reloading, stopping or hiding cancels previous scheduled
+steps and clears portals, poses, the echo and active particles.
 
 ## Window awareness
 
@@ -106,8 +168,8 @@ and do not move, resize, click or minimize application windows.
 Mixed-DPI monitor alignment depends on Windows and Tk coordinate scaling. A
 restart may be needed after changing display scaling; hardware combinations
 still need manual verification. Window platforms come from metadata and can
-correspond to partly covered windows. Sprite animation, multiple characters and
-a tray icon remain future work.
+correspond to partly covered windows. Sprite animation, multiple persistent
+characters and a dedicated animation state machine remain future work.
 
 ### Windows verification
 
@@ -154,6 +216,34 @@ For movement and interaction checks:
    the separate floors. Rearrange monitors and confirm the layout refreshes.
 8. Toggle `F3` and confirm character mouse gestures follow click-through state
    while `F2` and `F4` remain available.
+
+For tray, scene and pooled-effect checks:
+
+1. Start the app and locate the orange tray icon, including the notification
+   overflow if Windows places it there. Open its menu and test commands,
+   window listing, exploration, stopping and click-through controls.
+2. Start exploration or a scene, then run `ocultar`; confirm the character,
+   panels and effects disappear and motion stays paused. Double-click the icon
+   to restore; confirm mouse interaction works immediately.
+3. Repeat hiding and restore separately with `F2`, `F3` and `F4`; confirm the
+   first opens commands, the second restores interactive mode and the third
+   starts the selected scene. A failed tray initialization must keep the overlay
+   visible and refuse hiding.
+4. Open `cenas`, select **Primeiros passos**, press **Iniciar**, then select
+   **Duelo com o eco**. Test `cena boas_vindas` and `cena echo_duel` as well.
+5. Copy a scene JSON to a new regular file in the scene directory, give it a
+   unique ID and name, then press **Recarregar**. Confirm it becomes selectable
+   without restarting. Edit its text/timing and reload again.
+6. Add malformed JSON, an unknown action such as `open`, and a duplicate ID in
+   temporary test files. Reload; confirm errors appear and unrelated valid
+   scenes remain usable. Remove the test files and reload to recover the catalog.
+7. Start one scene, then start the other before the first finishes. Repeat with
+   `parar`, hiding and reloading; wait beyond old scheduled times and confirm
+   old dialogue, portals or the echo do not return.
+8. Repeat fights/throws and stop/restart scenes many times. Live particles must
+   disappear after expiry/stop, and total particle Canvas IDs must stay within
+   the fixed pool cap. Exiting must delete active and free pooled items and
+   remove the tray icon.
 
 ## Fixed MVP issues
 

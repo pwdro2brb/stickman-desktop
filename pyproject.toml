@@ -28,6 +28,9 @@ stickman-desktop = "stickman_desktop.app:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+stickman_desktop = ["assets/scenes/*.json"]
+
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

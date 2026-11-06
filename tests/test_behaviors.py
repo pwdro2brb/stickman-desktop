@@ -39,6 +39,15 @@ def desktop():
     desktop._next_decision = 0
     desktop._next_monitor_scan = 0
     desktop.command_open = False
+    desktop.hidden = False
+    desktop._closing = False
+    desktop.tray = None
+    desktop.command_panel = None
+    desktop._story_generation = 0
+    desktop.scenes = ()
+    desktop.scene_errors = ()
+    desktop.selected_scene_id = ""
+    desktop.scene_picker = desktop.scene_status = desktop.scene_play_button = None
     desktop.click_through = False
     desktop._drag_anchor = None
     desktop._dragging = False

@@ -1,0 +1,12 @@
+{
+  "id": "boas_vindas",
+  "name": "Primeiros passos",
+  "duration": 13,
+  "steps": [
+    {"at": 0, "action": "say", "text": "Esse desktop está cheio de caminhos. Vamos descobrir um?"},
+    {"at": 0.3, "action": "wave", "duration": 2.8},
+    {"at": 3.3, "action": "climb"},
+    {"at": 4.2, "action": "jump"},
+    {"at": 6, "action": "portal", "duration": 6}
+  ]
+}

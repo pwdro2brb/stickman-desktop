@@ -27,6 +27,8 @@ def parse_command(text: str) -> ParsedCommand:
         return ParsedCommand("empty")
     # Keep numeric punctuation before general normalization removes signs and dots.
     walk = re.match(r"^\s*(\S+)\s+(.*?)\s*$", str(text), re.DOTALL)
+    if walk and normalize(walk.group(1)) == "cena":
+        return ParsedCommand("scene", walk.group(2).strip().lower())
     if walk and normalize(walk.group(1)) == "andar":
         return ParsedCommand("walk", walk.group(2).replace(",", "."))
     if command.startswith("andar "):
@@ -55,6 +57,14 @@ def parse_command(text: str) -> ParsedCommand:
         return ParsedCommand("open", command.removeprefix("abrir ").strip())
     if command in {"historia", "luta"}:
         return ParsedCommand("story")
+    if command in {"cenas", "listar cenas"}:
+        return ParsedCommand("scenes")
+    if command == "recarregar cenas":
+        return ParsedCommand("reload_scenes")
+    if command in {"ocultar", "ocultar personagem"}:
+        return ParsedCommand("hide")
+    if command in {"mostrar", "restaurar", "mostrar personagem", "restaurar personagem"}:
+        return ParsedCommand("restore")
     if command in {"portal", "entrar no portal"}:
         return ParsedCommand("portal")
     if command in {"ajuda", "comandos"}:
