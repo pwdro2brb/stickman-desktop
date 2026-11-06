@@ -148,6 +148,26 @@ class CharacterRenderer:
             foot1, foot2 = (10 + sway, self.FOOT_CENTER), (-10 + sway, -4.0)
         elif mode == "wave":
             hand1 = (facing * (23 + math.sin(action_time * 8) * 4), -87)
+        elif mode == "windup":
+            # Sit into the back foot with both hands bracing the tab's weight.
+            hip, shoulder = (-facing * 5, -31.0), (-facing * 10, -54.0)
+            hand1, hand2 = (facing * 18, -70), (facing * 16, -55)
+            foot1, foot2 = (facing * 16, 0), (-facing * 21, 0)
+        elif mode == "throw":
+            follow_through = min(1.0, action_time * 7)
+            hip = (facing * 5, -35.0)
+            shoulder = (facing * (10 + 8 * follow_through), -57 + 3 * follow_through)
+            hand1, hand2 = (facing * 43, -64), (facing * 30, -53)
+            foot1, foot2 = (facing * 22, 0), (-facing * 15, -3)
+        elif mode == "recoil":
+            hip, shoulder = (-facing * 4, -34.0), (-facing * 18, -56.0)
+            hand1, hand2 = (-facing * 33, -73), (facing * 9, -75)
+            foot1, foot2 = (facing * 22, -4), (-facing * 10, -13)
+        elif mode == "recover":
+            rise = min(1.0, action_time * 4)
+            hip, shoulder = (0, -25 - 12 * rise), (-facing * (6 - 5 * rise), -47 - 15 * rise)
+            hand1, hand2 = (facing * (21 - 12 * rise), -22 - 7 * rise), (-facing * 16, -27)
+            foot1, foot2 = (facing * 16, 0), (-facing * 15, 0)
         elif mode == "fight":
             punch = (math.sin(action_time * 10) + 1) * 0.5
             hip, shoulder = (facing * 2, -36.0), (facing * 6, -60.0)

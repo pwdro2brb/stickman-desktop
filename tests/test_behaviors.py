@@ -37,7 +37,10 @@ def desktop():
     desktop._story_jobs = set()
     desktop._scene_jobs = set()
     desktop._scene_items = set()
-    desktop._echo_visible = False
+    desktop.anomaly = Mock()
+    desktop.tab_effects = Mock()
+    desktop._duel = desktop._duel_frame = None
+    desktop._tab_title = "Nova aba"
     desktop.active_character.next_decision = 0
     desktop._next_monitor_scan = 0
     desktop.command_open = False
@@ -146,7 +149,7 @@ def test_stop_cancels_story_scene_callbacks_and_visual_items(desktop):
     desktop.active_character.behavior = "follow"
     desktop.story_running = True
     desktop.active_character.pose = "fight"
-    desktop._echo_visible = True
+    desktop._duel = Mock()
     desktop._story_jobs = {"story-1", "story-2"}
     desktop._scene_jobs = {"scene-1"}
     desktop._scene_items = {41, 42}
@@ -157,7 +160,7 @@ def test_stop_cancels_story_scene_callbacks_and_visual_items(desktop):
     assert desktop.active_character.behavior == "manual"
     assert desktop.active_character.pose is None
     assert desktop.story_running is False
-    assert desktop._echo_visible is False
+    assert desktop._duel is None
     assert desktop._story_jobs == desktop._scene_jobs == desktop._scene_items == set()
     assert {call.args[0] for call in desktop.root.after_cancel.call_args_list} == {
         "story-1", "story-2", "scene-1",

@@ -12,6 +12,7 @@ def desktop(monkeypatch):
     desktop = StickmanDesktop.__new__(StickmanDesktop)
     desktop.root = Mock()
     desktop._closing = False
+    desktop._loop_jobs = {}
     desktop.root.winfo_id.return_value = 10
     desktop.panel_hwnd = 20
     desktop.windows_panel = None

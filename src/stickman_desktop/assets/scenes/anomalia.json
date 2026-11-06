@@ -1,0 +1,10 @@
+{
+  "id": "anomalia",
+  "name": "Duelo com a Anomalia",
+  "duration": 12,
+  "steps": [
+    {"at": 0, "action": "say", "text": "A Anomalia apareceu!"},
+    {"at": 1.2, "action": "fight", "duration": 6},
+    {"at": 7.8, "action": "portal", "duration": 3.8}
+  ]
+}

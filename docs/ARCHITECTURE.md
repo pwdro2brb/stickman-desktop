@@ -4,7 +4,7 @@
 
 ### `animation.py`
 
-Renders articulated characters in **Traços** and the visual sparring echo. Poses
+Renders articulated characters in **Traços** and the Anomalia. Poses
 include breathing, walking, jumping, falling, dragging, waving and fighting.
 Walking uses stance/swing foot targets and two-bone inverse kinematics, with
 velocity-synchronized timing and smoothed pose changes. Head and eye tracking
@@ -111,7 +111,7 @@ callbacks and closes the particle pool before destroying Tk.
 
 ## Declarative visual scenes
 
-The packaged scenes are `echo_duel` (**Duelo com o eco**) and `boas_vindas`
+The packaged scenes are `anomalia` (**Duelo com a Anomalia**) and `boas_vindas`
 (**Primeiros passos**). `pyproject.toml` includes their JSON files as package data,
 so normal installations retain the default scenes. No dependency or version
 change is required.
@@ -120,8 +120,10 @@ Each file has exactly `id`, `name`, `duration` and `steps`. Steps use direct
 arguments, for example `{"at": 2, "action": "walk", "fraction": 0.5}`.
 The allowed actions are `say`, `walk`, `jump`, `wave`, `climb`, `fight` and
 `portal`. Walk fractions refer to the current work area's usable horizontal
-span. Pose/portal actions have bounded duration; climb skips when no eligible
-window edge is available.
+span. Pose and portal actions have bounded duration. Climb skips when no eligible
+window edge is available. A `fight` step accepts `duration` from 0.2 to 6 seconds
+and an optional integer `fragments` from 2 to 24. Without an override, the default
+duel escalates its fragment count across successive impacts.
 
 The app dispatches validated steps through `_run_scene_step`; this path never
 calls the command parser, `execute`, application launch or window minimization.
@@ -133,7 +135,15 @@ cenas` expose the same controls; `F4` plays the selection. A bad file does not
 prevent valid scenes from loading, while ambiguous duplicate IDs are removed.
 The selected character performs the scene. Starting another scene, changing
 character selection, reloading, stopping or hiding cancels previous scheduled
-steps and clears portals, poses, the echo and active particles.
+steps and clears portals, poses, the Anomalia, tab props and active effects.
+
+The duel timeline stages each pull, wind-up, throw and recoil independently of
+the browser. Tab props trace arcs and break into temporary Canvas fragments at
+impact. The pieces bounce and settle on the scene floor. Some retain a moving
+activity indicator until they expire. A visible browser
+window can supply its title through the existing window metadata. The overlay
+draws the entire effect, leaving the actual page visible and usable in its
+browser. It uses a generic prop when no browser window is available.
 
 ## Window awareness
 
@@ -286,7 +296,10 @@ For tray, scene and pooled-effect checks:
    starts the selected scene. A failed tray initialization must keep the overlay
    visible and refuse hiding.
 4. Open `cenas`, select **Primeiros passos**, press **Iniciar**, then select
-   **Duelo com o eco**. Test `cena boas_vindas` and `cena echo_duel` as well.
+   **Duelo com a Anomalia**. Test `cena boas_vindas` and `cena anomalia` as well.
+   With a browser window visible, verify that tab props fly and shatter while
+   the real page remains usable. Repeat with no browser window visible to see
+   the generic prop.
 5. Copy a scene JSON to a new regular file in the scene directory, give it a
    unique ID and name, then press **Recarregar**. Confirm it becomes selectable
    without restarting. Edit its text/timing and reload again.
@@ -295,7 +308,7 @@ For tray, scene and pooled-effect checks:
    scenes remain usable. Remove the test files and reload to recover the catalog.
 7. Start one scene, then start the other before the first finishes. Repeat with
    `parar`, hiding and reloading; wait beyond old scheduled times and confirm
-   old dialogue, portals or the echo do not return.
+   old dialogue, portals, tab fragments or the Anomalia do not return.
 8. Repeat fights/throws and stop/restart scenes many times. Live particles must
    disappear after expiry/stop, and total particle Canvas IDs must stay within
    the fixed pool cap. Exiting must delete active and free pooled items and

@@ -8,7 +8,7 @@ from stickman_desktop.app import StickmanDesktop
 from stickman_desktop.characters import DesktopCharacter
 from stickman_desktop.motion import Motion, Surface
 from stickman_desktop.scenes import Scene, SceneCatalog, SceneStep
-from stickman_desktop.windows import MonitorInfo
+from stickman_desktop.windows import MonitorInfo, WindowInfo
 
 
 @pytest.fixture
@@ -26,12 +26,12 @@ def desktop(monkeypatch):
     app.canvas = Mock()
     app.control = Mock()
     app.particles = Mock()
-    app.echo = Mock()
     app.hotkeys = Mock()
     app.hotkeys.poll.return_value = []
     app.tray = Mock(available=True)
     app.tray.poll.return_value = []
     app.hidden = app._closing = app.click_through = False
+    app._loop_jobs = {}
     app.command_panel = app.windows_panel = None
     app.windows_tree = app.windows_status = None
     app.scene_picker = app.scene_status = app.scene_play_button = None
@@ -50,7 +50,10 @@ def desktop(monkeypatch):
     app.story_running = False
     app._story_generation = 0
     app._story_jobs, app._scene_jobs, app._scene_items = set(), set(), set()
-    app._echo_visible = False
+    app.anomaly = Mock()
+    app.tab_effects = Mock()
+    app._duel = app._duel_frame = None
+    app._tab_title = "Nova aba"
     app._drag_anchor = app._drag_sample = None
     app._dragging = False
     app._last_tick = 0
@@ -128,12 +131,14 @@ def test_quit_event_stops_dispatch_and_disposes_resources_once(desktop):
     tray = desktop.tray
     tray.poll.return_value = ["quit", "commands"]
     desktop.open_command_panel = Mock()
+    desktop._loop_jobs = {"animation": "tick", "windows": "scan", "input": "poll"}
     desktop._poll_hotkeys()
     desktop.close()
     tray.close.assert_called_once()
     desktop.particles.close.assert_called_once()
     desktop.hotkeys.close.assert_called_once()
     desktop.root.destroy.assert_called_once()
+    assert {call.args[0] for call in desktop.root.after_cancel.call_args_list} == {"tick", "scan", "poll"}
     desktop.root.after.assert_not_called()
     desktop.open_command_panel.assert_not_called()
 
@@ -210,6 +215,34 @@ def test_story_shortcut_restores_even_with_an_empty_scene_catalog(desktop):
     assert not desktop.hidden
     desktop.root.deiconify.assert_called_once()
     assert not desktop.story_running
+
+
+def test_legacy_scene_id_opens_anomalia_when_no_custom_scene_uses_it(desktop):
+    desktop.scenes = (Scene("anomalia", "Duelo com a Anomalia", 1,
+                            (SceneStep(0, "fight", {"duration": 1}),)),)
+    desktop.execute("cena echo_duel")
+    assert desktop.selected_scene_id == "anomalia"
+    assert desktop.story_running
+
+
+def test_duel_uses_browser_label_and_clears_fragments_on_stop(desktop, monkeypatch):
+    monkeypatch.setattr(module.time, "monotonic", lambda: 100.0)
+    desktop.visible_windows = [WindowInfo(1, "Editor", (0, 0, 600, 400)),
+                               WindowInfo(2, "Página de teste — Brave", (100, 200, 800, 550))]
+    desktop._run_scene_step(SceneStep(0, "fight", {"duration": 6, "fragments": 24}))
+    desktop._advance_duel(102.0, 0.05)
+
+    impact, title = desktop.tab_effects.shatter.call_args.args
+    assert impact.fragments == 24
+    assert title == "Página de teste"
+    assert desktop.tab_effects.shatter.call_args.kwargs["floor_y"] == desktop.y
+    desktop.tab_effects.clear.reset_mock()
+    desktop.stop()
+    desktop.tab_effects.clear.assert_called_once()
+    desktop.anomaly.set_visible.assert_called_with(False)
+    assert desktop._duel is desktop._duel_frame is None
+    desktop._advance_duel(103.0, 0.05)
+    desktop.tab_effects.shatter.assert_called_once()
 
 
 def test_companion_following_survives_selection_and_keeps_its_own_target(desktop, monkeypatch):

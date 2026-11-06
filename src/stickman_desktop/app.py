@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import random
+import re
 import sys
 import time
 import tkinter as tk
@@ -15,8 +16,10 @@ from .environment import FOOT_CLEARANCE, desktop_surfaces, nearest_monitor, virt
 from .gestures import PointerVelocity
 from .motion import Motion
 from .core import parse_command
+from .duel import DuelFrame, FighterPose, TabDuel
 from .scenes import BUILTIN_SCENES_DIR, SceneStep, load_scenes
 from .sprites import SpritePack, SpriteRenderer
+from .tab_effects import TabEffects
 from .tray import TrayIcon
 from .windows import (
     GlobalHotkeys,
@@ -34,6 +37,8 @@ from .windows import (
 )
 
 TRANSPARENT = "#ff00ff"
+BROWSER_NAMES = frozenset({"google chrome", "chromium", "microsoft edge", "mozilla firefox",
+                           "firefox", "brave", "opera", "vivaldi"})
 
 
 class StickmanDesktop:
@@ -98,8 +103,10 @@ class StickmanDesktop:
         self._story_jobs: set[str] = set()
         self._scene_jobs: set[str] = set()
         self._scene_items: set[int] = set()
-        self._echo_visible = False
-        self._next_spark = 0.0
+        self._duel: TabDuel | None = None
+        self._duel_frame: DuelFrame | None = None
+        self._duel_last_tick = 0.0
+        self._tab_title = "Nova aba"
         self._next_monitor_scan = time.monotonic() + 1
         self._last_tick = time.monotonic()
         self._gaze: tuple[float, float] | None = None
@@ -144,9 +151,11 @@ class StickmanDesktop:
                 self.tray.close()
             self.tray = None
             tray_error = True
-        self.root.after(100, self._capture_external_window)
-        self.root.after(20, self._poll_hotkeys)
-        self.root.after(16, self._tick)
+        self._loop_jobs = {
+            "windows": self.root.after(100, self._capture_external_window),
+            "input": self.root.after(20, self._poll_hotkeys),
+            "animation": self.root.after(16, self._tick),
+        }
         if tray_error:
             self.say("A bandeja está indisponível. F2 abre os comandos; o personagem continuará visível.", 7)
         else:
@@ -233,8 +242,9 @@ class StickmanDesktop:
         self._sync_surfaces()
 
     def _draw_effects(self) -> None:
-        self.echo = CharacterRenderer(self.canvas, "#8970ff", tag="echo")
-        self.echo.set_visible(False)
+        self.anomaly = CharacterRenderer(self.canvas, "#a66cff", tag="anomaly")
+        self.anomaly.set_visible(False)
+        self.tab_effects = TabEffects(self.canvas)
         self.particles = Particles(self.canvas)
         self.bubble = self.canvas.create_rectangle(0, 0, 0, 0, fill="#fff9eb",
                                                    outline="#333333", width=2, state="hidden")
@@ -274,36 +284,39 @@ class StickmanDesktop:
             text = "Ai! Essa parede é dura!" if level == 1 else "Ai, ai… já chega de quicar!"
             self.say(text, 3)
 
-    def _render_character(self, character: DesktopCharacter, now: float, dt: float) -> str:
+    def _render_character(self, character: DesktopCharacter, now: float, dt: float) -> None:
         motion = character.motion
         frame = character.animation.update(motion.mode, now, dt, pose=character.pose,
                                            pose_until=character.pose_until)
         character.renderer.render(motion.x, motion.y, motion.direction, frame.mode, now, motion.vy,
                                   gaze=self._gaze, dt=dt, vx=motion.vx, state_elapsed=frame.elapsed)
-        return frame.mode
+
+    @staticmethod
+    def _render_duelist(renderer, pose: FighterPose, target: FighterPose, now: float, dt: float) -> None:
+        mode = pose.mode
+        if isinstance(renderer, SpriteRenderer):
+            mode = {"windup": "fight", "throw": "fight", "recoil": "fall",
+                    "recover": "idle"}.get(mode, mode)
+        renderer.render(pose.x, pose.y, pose.direction, mode, now,
+                        gaze=(target.x, target.y - 75), dt=dt, state_elapsed=pose.elapsed)
 
     def _render(self, dt: float = 0) -> None:
         now = time.monotonic()
-        active_mode = "idle"
+        duel = self._duel_frame
         for character in self.characters.values():
-            mode = self._render_character(character, now, dt)
-            if character is self.active_character:
-                active_mode = mode
-        echo_visible = self._echo_visible and active_mode == "fight"
-        self.echo.set_visible(echo_visible)
-        if echo_visible:
-            left, _top, right, _bottom = self._work_area()
-            echo_x = max(left + 40, min(right - 40, self.x + self.direction * 140))
-            self.echo.render(echo_x, self.y, -self.direction, "fight", now + 0.2,
-                             gaze=(self.x, self.y - 75), dt=dt, vx=0)
-            if now >= self._next_spark:
-                self._next_spark = now + 0.13
-                self.particles.burst((self.x + echo_x) / 2, self.y - 48, count=5)
+            if duel is not None and character is self.active_character:
+                self._render_duelist(character.renderer, duel.player, duel.opponent, now, dt)
+            else:
+                self._render_character(character, now, dt)
+        self.anomaly.set_visible(duel is not None)
+        if duel is not None:
+            self._render_duelist(self.anomaly, duel.opponent, duel.player, now, dt)
         if now < self.bubble_until:
             left, top, right, bottom = self._work_area()
             width = min(350, right - left - 24)
-            bx = max(left + 12, min(right - width - 12, self.x + 30))
-            by = max(top + 12, self.y - 200)
+            x, y = (duel.player.x, duel.player.y) if duel is not None else (self.x, self.y)
+            bx = max(left + 12, min(right - width - 12, x + 30))
+            by = max(top + 12, y - 200)
             self.canvas.itemconfigure(self.bubble_text, state="normal", width=width - 24)
             self.canvas.coords(self.bubble_text, bx + 12, by + 10)
             bounds = self.canvas.bbox(self.bubble_text)
@@ -323,7 +336,7 @@ class StickmanDesktop:
             return
         self._refresh_desktop()
         self._refresh_windows()
-        self.root.after(250, self._capture_external_window)
+        self._loop_jobs["windows"] = self.root.after(250, self._capture_external_window)
 
     def _refresh_windows(self) -> bool:
         excluded = self.own_hwnds
@@ -530,7 +543,7 @@ class StickmanDesktop:
                 self._handle_tray_event(event)
                 if self._closing:
                     return
-        self.root.after(20, self._poll_hotkeys)
+        self._loop_jobs["input"] = self.root.after(20, self._poll_hotkeys)
 
     def say(self, text: str, seconds: float = 4) -> None:
         self.canvas.itemconfigure(self.bubble_text, text=text[:320] + ("…" if len(text) > 320 else ""))
@@ -687,7 +700,7 @@ class StickmanDesktop:
         if character is self.active_character:
             return True
         self._end_drag()
-        if self.story_running or self._scene_jobs:
+        if self.story_running or self._scene_jobs or self._duel is not None:
             self.active_character.pose = None
             self.motion.stop()
             self._cancel_story()
@@ -895,14 +908,15 @@ class StickmanDesktop:
         for item in self._scene_items:
             self.canvas.delete(item)
         self._scene_items.clear()
-        self._echo_visible = False
+        self._end_duel()
         self.particles.clear()
 
     def portal(self, manual: bool = True, duration: float = 6) -> None:
         if manual:
             self._take_control()
         self.active_character.pose = None
-        self._echo_visible = False
+        if self._duel is not None:
+            self._end_duel()
         left, top, right, bottom = self._work_area()
         center = max(left + 70, min(right - 70, self.x + self.direction * 180))
         cy = max(top + 115, min(bottom - 115, self.y - 90))
@@ -928,7 +942,7 @@ class StickmanDesktop:
         self.scenes, self.scene_errors = catalog.scenes, catalog.errors
         ids = {scene.id for scene in self.scenes}
         if self.selected_scene_id not in ids:
-            self.selected_scene_id = ("echo_duel" if "echo_duel" in ids else
+            self.selected_scene_id = ("anomalia" if "anomalia" in ids else
                                       self.scenes[0].id if self.scenes else "")
         self._update_scene_picker()
         if notify:
@@ -967,6 +981,8 @@ class StickmanDesktop:
             self.restore_overlay()
         chosen = scene_id or self.selected_scene_id
         scene = next((item for item in self.scenes if item.id == chosen), None)
+        if scene is None and chosen == "echo_duel":
+            scene = next((item for item in self.scenes if item.id == "anomalia"), None)
         if scene is None:
             self.say("Cena não encontrada. Abra cenas para selecionar ou recarregar os arquivos JSON.", 6)
             return
@@ -983,6 +999,8 @@ class StickmanDesktop:
         self._schedule_scene(round(scene.duration * 1000), self._finish_story, story=True)
 
     def _run_scene_step(self, step: SceneStep) -> None:
+        if self._duel is not None and step.action not in {"say", "fight"}:
+            self._end_duel()
         if step.action == "say":
             self.say(step.args["text"], 4)
         elif step.action == "walk":
@@ -992,7 +1010,6 @@ class StickmanDesktop:
             self.motion.jump()
         elif step.action == "wave":
             self.motion.stop()
-            self._echo_visible = False
             self._scene_pose("wave", step.args["duration"])
         elif step.action == "climb":
             self._refresh_windows()
@@ -1002,7 +1019,7 @@ class StickmanDesktop:
             if target is not None:
                 self.motion.leap_to(target.key)
         elif step.action == "fight":
-            self._fight(step.args["duration"])
+            self._fight(step.args["duration"], fragments=step.args.get("fragments"))
         elif step.action == "portal":
             self.portal(manual=False, duration=step.args["duration"])
 
@@ -1012,16 +1029,56 @@ class StickmanDesktop:
         def finish() -> None:
             if self.active_character.pose == pose and self.active_character.pose_until == end:
                 self.active_character.pose = None
-                if pose == "fight":
-                    self._echo_visible = False
         self._schedule_scene(round(duration * 1000), finish, story=self.story_running)
 
-    def _fight(self, duration: float = 5) -> None:
+    def _browser_tab(self) -> tuple[str, tuple[float, float] | None]:
+        windows = self.visible_windows
+        if self.last_external_window is not None:
+            windows = [self.last_external_window, *windows]
+        for window in windows:
+            parts = re.split(r"\s+[-–—]\s+", window.title)
+            if parts[-1].strip().casefold() not in BROWSER_NAMES:
+                continue
+            left, top, right, _bottom = window.rect
+            title = " — ".join(parts[:-1]).strip() or "Nova aba"
+            return title[:80], (left + min(170, (right - left) / 2) - self.origin_x,
+                                top + 28 - self.origin_y)
+        return "Nova aba", None
+
+    def _fight(self, duration: float = 5, fragments: int | None = None) -> None:
+        self._end_duel()
         self.motion.stop()
-        self._scene_pose("fight", duration)
-        self._echo_visible = True
-        self.say("Sua vez, eco!", 3)
-        self.particles.burst(self.x + self.direction * 70, self.y - 50, count=16)
+        self.active_character.pose = None
+        self.bubble_until = 0
+        self._tab_title, source = self._browser_tab()
+        self._duel = TabDuel(duration, self.x, self.y, self._work_area(),
+                             fragments=fragments, source=source)
+        self._duel_frame = self._duel.advance(0)
+        self._duel_last_tick = time.monotonic()
+
+    def _end_duel(self, keep_fragments: bool = False) -> None:
+        self._duel = self._duel_frame = None
+        self.anomaly.set_visible(False)
+        if keep_fragments:
+            self.tab_effects.render_tab(None, self._tab_title, 0)
+        else:
+            self.tab_effects.clear()
+
+    def _advance_duel(self, now: float, dt: float) -> None:
+        self.tab_effects.step(dt)
+        if self._duel is None:
+            return
+        frame = self._duel.advance(max(0.0, now - self._duel_last_tick))
+        self._duel_last_tick = now
+        for impact in frame.impacts:
+            self.tab_effects.shatter(impact, self._tab_title, floor_y=self.y)
+            self.particles.burst(impact.x, impact.y, color="#ddc6a6",
+                                 count=min(18, 5 + impact.fragments // 2))
+        if frame.finished:
+            self._end_duel(keep_fragments=True)
+        else:
+            self._duel_frame = frame
+            self.tab_effects.render_tab(frame.tab, self._tab_title, now)
 
     def _finish_story(self) -> None:
         self._cancel_story()
@@ -1185,9 +1242,11 @@ class StickmanDesktop:
         self._last_tick = now
         self.frame += 1
         if self.hidden:
-            self.root.after(16, self._tick)
+            self._loop_jobs["animation"] = self.root.after(16, self._tick)
             return
         for character in self.characters.values():
+            if self._duel is not None and character is self.active_character:
+                continue
             motion = character.motion
             self._update_behavior(now, character)
             was_grounded = motion.grounded
@@ -1195,15 +1254,19 @@ class StickmanDesktop:
             if not was_grounded and motion.grounded:
                 self.particles.burst(motion.x, motion.y - 2, color=character.color, count=8)
             self._react_to_impacts(now, character)
+        self._advance_duel(now, dt)
         self.particles.step(dt)
         self._update_gaze()
         self._render(dt)
-        self.root.after(16, self._tick)
+        self._loop_jobs["animation"] = self.root.after(16, self._tick)
 
     def close(self) -> None:
         if self._closing:
             return
         self._closing = True
+        for job in self._loop_jobs.values():
+            self.root.after_cancel(job)
+        self._loop_jobs.clear()
         if self.tray is not None:
             self.tray.close()
             self.tray = None
@@ -1212,7 +1275,8 @@ class StickmanDesktop:
         self.particles.close()
         for character in self.characters.values():
             character.renderer.close()
-        self.echo.close()
+        self.anomaly.close()
+        self.tab_effects.close()
         self._sprite_pack = None
         self.hotkeys.close()
         self.root.destroy()

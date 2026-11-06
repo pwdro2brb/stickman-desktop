@@ -25,7 +25,7 @@ The project renders an original stick figure over Windows, lets the character in
 - Click-through mode, so the desktop remains usable.
 - Reloadable JSON fight, greeting and portal scenes that do not modify files or applications.
 - Bounded particle pooling that reuses Canvas items across effects.
-- An original digital sparring echo, articulated poses and short-lived impact particles.
+- A duel with the Anomalia, with heavy throws and browser-tab props that shatter on impact.
 - Portuguese command parser with no cloud dependency.
 
 ## Safety model
@@ -104,7 +104,7 @@ abrir paint
 abrir explorador
 história
 cenas
-cena echo_duel
+cena anomalia
 cena boas_vindas
 recarregar cenas
 ocultar
@@ -198,8 +198,20 @@ original scenes are included.
 
 | ID | Name |
 | --- | --- |
-| `echo_duel` | Duelo com o eco |
+| `anomalia` | Duelo com a Anomalia |
 | `boas_vindas` | Primeiros passos |
+
+In **Duelo com a Anomalia**, the fighters pull out browser-tab props, wind up
+and throw them in arcs. The impact knocks the other fighter back and breaks the
+prop into 2–24 pieces. The default duel builds from 6 to 12 to 24 pieces.
+The pieces tumble, bounce and settle. Some keep their animated activity
+indicators for about two seconds before disappearing.
+
+A prop can borrow the title of a visible browser window. It uses a generic tab
+when no browser window is found. The overlay draws the prop and its fragments
+without capturing page contents or sending input to the browser. The real tab
+remains usable in the browser throughout the scene. `cena echo_duel` is a legacy
+alias for `cena anomalia`.
 
 Edit or add regular UTF-8 JSON files in
 `src/stickman_desktop/assets/scenes/`. This directory is also included when the
@@ -228,7 +240,7 @@ Only visual actions are accepted:
 | `jump` | None |
 | `wave` | Optional `duration`, 0.2–5 seconds |
 | `climb` | None; uses an eligible window edge if one is available |
-| `fight` | Optional `duration`, 0.2–6 seconds |
+| `fight` | Optional `duration`, 0.2–6 seconds, and integer `fragments`, 2–24 pieces per impact |
 | `portal` | Optional `duration`, 1–10 seconds |
 
 Scenes can last 1–90 seconds and contain 1–64 steps; `at` must be within that

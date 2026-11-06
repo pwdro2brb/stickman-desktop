@@ -13,7 +13,7 @@ MAX_SCENE_BYTES = 64 * 1024
 MAX_STEPS = 64
 _ACTIONS = {
     "say": {"text"}, "walk": {"fraction"}, "jump": set(),
-    "wave": {"duration"}, "climb": set(), "fight": {"duration"},
+    "wave": {"duration"}, "climb": set(), "fight": {"duration", "fragments"},
     "portal": {"duration"},
 }
 _DURATIONS = {"wave": (0.2, 5.0, 2.8), "fight": (0.2, 6.0, 5.0),
@@ -105,6 +105,11 @@ def _validate(data: object) -> Scene:
         elif action in _DURATIONS:
             low, high, default = _DURATIONS[action]
             args["duration"] = _number(raw.get("duration", default), f"{label}: duration", low, high)
+        if action == "fight" and "fragments" in raw:
+            fragments = raw["fragments"]
+            if type(fragments) is not int or not 2 <= fragments <= 24:
+                raise ValueError(f"{label}: fragments deve ser um inteiro entre 2 e 24.")
+            args["fragments"] = fragments
         steps.append(SceneStep(at, action, args))
     return Scene(identifier, name, duration, tuple(sorted(steps, key=lambda step: step.at)))
 

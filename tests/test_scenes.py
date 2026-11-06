@@ -25,10 +25,14 @@ def write_scene(directory, data, filename="example.json"):
 def test_shipped_scenes_are_valid_original_visual_sequences():
     catalog = load_scenes(BUILTIN_SCENES_DIR)
     assert catalog.errors == ()
-    assert {scene.id for scene in catalog.scenes} == {"echo_duel", "boas_vindas"}
-    duel = next(scene for scene in catalog.scenes if scene.id == "echo_duel")
-    assert duel.duration == 16
-    assert [step.action for step in duel.steps] == ["say", "walk", "fight", "portal"]
+    assert {scene.id for scene in catalog.scenes} == {"anomalia", "boas_vindas"}
+    duel = next(scene for scene in catalog.scenes if scene.id == "anomalia")
+    assert duel.name == "Duelo com a Anomalia"
+    assert duel.duration == 12
+    assert [step.action for step in duel.steps] == ["say", "fight", "portal"]
+    assert [step.at for step in duel.steps] == [0, 1.2, 7.8]
+    assert duel.steps[1].args == {"duration": 6}
+    assert duel.steps[2].args == {"duration": 3.8}
 
 
 def test_actions_are_sorted_stably_and_optional_durations_have_defaults(tmp_path):
@@ -45,6 +49,23 @@ def test_actions_are_sorted_stably_and_optional_durations_have_defaults(tmp_path
     assert [step.args for step in result.steps] == [
         {"fraction": 0.25}, {"duration": 2.8}, {"duration": 5}, {"duration": 6}, {}, {},
     ]
+
+
+@pytest.mark.parametrize("fragments", [2, 24])
+def test_fight_accepts_explicit_fragment_limits(tmp_path, fragments):
+    path = write_scene(tmp_path, scene_data(steps=[
+        {"at": 0, "action": "fight", "fragments": fragments},
+    ]))
+    assert load_scene(path).steps[0].args == {"duration": 5, "fragments": fragments}
+
+
+@pytest.mark.parametrize("fragments", [1, 25, True, False, 2.0, 3.5, "12", None])
+def test_fight_rejects_non_integer_or_out_of_range_fragment_counts(tmp_path, fragments):
+    path = write_scene(tmp_path, scene_data(steps=[
+        {"at": 0, "action": "fight", "fragments": fragments},
+    ]))
+    with pytest.raises(ValueError, match="fragments deve ser um inteiro entre 2 e 24"):
+        load_scene(path)
 
 
 @pytest.mark.parametrize("action", ["open", "minimize", "exec", "shell", "python", "delete", "unknown", [], True])
